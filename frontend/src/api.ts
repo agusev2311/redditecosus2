@@ -1,4 +1,4 @@
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, RetryFailedJobsResponse, UploadResponse, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -130,6 +130,31 @@ export function getStorage(token: string) {
 
 export function getUsers(token: string) {
   return request<{ items: User[] }>('/api/users', {}, token)
+}
+
+export function getRuntimeConfig(token: string) {
+  return request<{ items: RuntimeConfigItem[] }>('/api/admin/runtime-config', {}, token)
+}
+
+export function updateRuntimeConfig(token: string, updates: Record<string, string | number | boolean>) {
+  return request<{ items: RuntimeConfigItem[] }>(
+    '/api/admin/runtime-config',
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ updates }),
+    },
+    token,
+  )
+}
+
+export function reindexAllMedia(token: string) {
+  return request<ReindexAllResponse>(
+    '/api/admin/reindex-all',
+    {
+      method: 'POST',
+    },
+    token,
+  )
 }
 
 export function createUser(token: string, payload: { username: string; password: string; role: 'admin' | 'member'; telegram_username: string }) {

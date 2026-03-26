@@ -5,11 +5,14 @@ from time import perf_counter
 from typing import Any
 
 import httpx
+from sqlalchemy import func
 
-from app.config import settings
-from app.models import MediaItem
+from app.config import _normalize_ai_proxy_base_url, settings
+from app.db.session import SessionLocal
+from app.models import MediaItem, MediaTag, Tag, TagKind
 from app.services.analysis_enrichment import enrich_analysis_tags
 from app.services.media_probe import extract_frames_for_model, probe_media, technical_tags
+from app.services.runtime_config import get_runtime_config_map
 from app.services.storage import absolute_media_path
 
 
@@ -26,6 +29,10 @@ Goals:
 5. Never invent metadata that is not inferable from the media or supplied probe data.
 
 Required behavior:
+- Return descriptions in two languages:
+  - description_ru: Russian
+  - description_en: English
+- Tags must stay in English only. Never output Russian tags.
 - Distinguish between semantic tags, technical tags, and safety tags.
 - Safety rating must be one of: sfw, questionable, nsfw.
 - Infer whether the media is blurred or soft, even if the local blur score is already supplied.
@@ -38,10 +45,12 @@ Required behavior:
 - For adult content, be precise and conservative. Use questionable when there is suggestive or revealing content without clear explicit nudity. Use nsfw only when explicit sexual content or explicit nudity is clearly visible. Use sfw otherwise.
 - If multiple frames are provided for a video or GIF, reason over the sequence, not just one frame.
 - The description should be detailed enough that a human can recognize the file from memory.
+- If preferred existing tags are provided, reuse those exact tags whenever they fit. Prefer an existing tag over inventing a near-duplicate. Create a new tag only when no existing tag matches well enough.
 
 Output contract:
 - title: a short human-friendly label.
-- description: a detailed paragraph describing the scene or sequence.
+- description_ru: a detailed Russian paragraph describing the scene or sequence.
+- description_en: a detailed English paragraph describing the scene or sequence.
 - semantic_tags: 16 to 48 tags, lower_snake_case where practical, mixing broad categories and precise subtypes/species/fandom labels.
 - technical_tags: lower_snake_case tags for media/quality/rendering.
 - safety_tags: must include one of sfw/questionable/nsfw and may include suggestive, nudity, censor, etc.
@@ -58,7 +67,8 @@ ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
-        "description": {"type": "string"},
+        "description_ru": {"type": "string"},
+        "description_en": {"type": "string"},
         "semantic_tags": {"type": "array", "items": {"type": "string"}, "minItems": 4},
         "technical_tags": {"type": "array", "items": {"type": "string"}, "minItems": 2},
         "safety_tags": {"type": "array", "items": {"type": "string"}, "minItems": 1},
@@ -70,7 +80,8 @@ ANALYSIS_SCHEMA = {
     },
     "required": [
         "title",
-        "description",
+        "description_ru",
+        "description_en",
         "semantic_tags",
         "technical_tags",
         "safety_tags",
@@ -85,17 +96,36 @@ ANALYSIS_SCHEMA = {
 
 
 class AIProxyService:
-    def __init__(self) -> None:
-        verify: bool | str = settings.ai_proxy_verify_tls
-        if settings.ai_proxy_ca_bundle:
-            verify = settings.ai_proxy_ca_bundle
-        self.client = httpx.Client(timeout=settings.ai_proxy_timeout_seconds, verify=verify)
+    def _existing_tags_for_owner(self, owner_id: int, limit: int) -> dict[str, list[str]]:
+        session = SessionLocal()
+        try:
+            rows = (
+                session.query(Tag.name, Tag.kind, func.count(MediaTag.id).label("usage_count"))
+                .outerjoin(MediaTag, MediaTag.tag_id == Tag.id)
+                .filter(Tag.owner_id == owner_id)
+                .group_by(Tag.id)
+                .order_by(func.count(MediaTag.id).desc(), Tag.name.asc())
+                .all()
+            )
+        finally:
+            session.close()
+
+        tags_by_kind: dict[str, list[str]] = {"semantic": [], "technical": [], "safety": []}
+        per_kind_limit = max(limit, 1)
+        for name, kind, _usage in rows:
+            bucket = tags_by_kind[kind.value]
+            if len(bucket) >= per_kind_limit:
+                continue
+            bucket.append(name)
+        return tags_by_kind
 
     def analyze_media(self, media: MediaItem) -> dict[str, Any]:
+        runtime_config = get_runtime_config_map()
         path = absolute_media_path(media)
         probe = probe_media(path, media.kind)
         local_technical_tags = technical_tags(media.kind, probe)
         frames = extract_frames_for_model(path, media.kind)
+        existing_tags = self._existing_tags_for_owner(media.owner_id, int(runtime_config["analysis_existing_tag_limit"]))
         content = [
             {
                 "type": "text",
@@ -110,6 +140,9 @@ class AIProxyService:
                         f"duration_seconds: {probe.duration_seconds}",
                         f"local_blur_score: {probe.blur_score}",
                         f"local_technical_tags: {', '.join(local_technical_tags)}",
+                        f"preferred_existing_semantic_tags: {', '.join(existing_tags['semantic'])}",
+                        f"preferred_existing_technical_tags: {', '.join(existing_tags['technical'])}",
+                        f"preferred_existing_safety_tags: {', '.join(existing_tags['safety'])}",
                         f"source_path: {media.source_path or ''}",
                         "Analyze the media and produce the schema exactly.",
                     ]
@@ -128,8 +161,8 @@ class AIProxyService:
             )
 
         payload = {
-            "model": settings.ai_proxy_model,
-            "reasoning_effort": settings.ai_proxy_reasoning_effort,
+            "model": runtime_config["ai_proxy_model"],
+            "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
             "stream": False,
             "response_format": {
                 "type": "json_schema",
@@ -144,27 +177,39 @@ class AIProxyService:
                 {"role": "user", "content": content},
             ],
         }
+
+        verify: bool | str = bool(runtime_config["ai_proxy_verify_tls"])
+        if runtime_config["ai_proxy_ca_bundle"]:
+            verify = str(runtime_config["ai_proxy_ca_bundle"])
+
         started = perf_counter()
-        response = self.client.post(
-            f"{settings.ai_proxy_base_url.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.ai_proxy_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+        with httpx.Client(timeout=int(runtime_config["ai_proxy_timeout_seconds"]), verify=verify) as client:
+            response = client.post(
+                f"{_normalize_ai_proxy_base_url(str(runtime_config['ai_proxy_base_url'])).rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.ai_proxy_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
         elapsed = round(perf_counter() - started, 3)
         response.raise_for_status()
         body = response.json()
         content_text = body["choices"][0]["message"]["content"]
         parsed = json.loads(content_text)
         usage = body.get("usage") or {}
-        parsed = enrich_analysis_tags(parsed, media)
+        description_ru = str(parsed.get("description_ru", "")).strip()
+        description_en = str(parsed.get("description_en", "")).strip()
+        parsed["description_ru"] = description_ru
+        parsed["description_en"] = description_en
+        parsed["description"] = "\n\n".join(part for part in [description_ru, f"EN: {description_en}" if description_en else ""] if part)
+        parsed = enrich_analysis_tags(parsed, media, existing_tags_by_kind=existing_tags)
         parsed["x_request_id"] = response.headers.get("x-request-id")
         parsed["local_technical_tags"] = local_technical_tags
+        parsed["preferred_existing_tags"] = existing_tags
         parsed["x_metrics"] = {
-            "model": body.get("model") or settings.ai_proxy_model,
-            "reasoning_effort": settings.ai_proxy_reasoning_effort,
+            "model": body.get("model") or runtime_config["ai_proxy_model"],
+            "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
             "ai_seconds": elapsed,
             "frame_count": len(frames),
             "prompt_tokens": usage.get("prompt_tokens"),

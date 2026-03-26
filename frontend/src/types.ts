@@ -28,6 +28,8 @@ export interface MediaItem {
   blur_score?: number | null
   safety_rating: SafetyRating
   description?: string | null
+  description_ru?: string | null
+  description_en?: string | null
   technical_notes?: string | null
   processing_status: ProcessingStatus
   normalized_timestamp?: string | null
@@ -121,4 +123,22 @@ export interface RetryFailedJobsResponse {
   queued_media_ids: string[]
   skipped_active_media: number
   skipped_missing_media: number
+}
+
+export interface RuntimeConfigItem {
+  key: string
+  label: string
+  description: string
+  kind: 'string' | 'integer' | 'boolean' | 'enum' | 'timezone'
+  value: string | number | boolean
+  default: string | number | boolean
+  min?: number | null
+  max?: number | null
+  choices: string[]
+}
+
+export interface ReindexAllResponse {
+  total_media: number
+  queued_jobs: number
+  skipped_active_media: number
 }

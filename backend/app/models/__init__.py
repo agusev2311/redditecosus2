@@ -1,4 +1,5 @@
 from app.models.entities import (
+    AppConfigEntry,
     ArchiveImport,
     AuditLog,
     BackupScope,
@@ -20,6 +21,7 @@ from app.models.entities import (
 )
 
 __all__ = [
+    "AppConfigEntry",
     "ArchiveImport",
     "AuditLog",
     "BackupScope",
@@ -39,4 +41,3 @@ __all__ = [
     "User",
     "UserRole",
 ]
-

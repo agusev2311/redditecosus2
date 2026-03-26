@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 
 from app.db.session import SessionLocal
-from app.models import User, UserRole
+from app.models import JobStatus, MediaItem, ProcessingJob, User, UserRole
 from app.services.audit import audit
+from app.services.processing import get_processing_coordinator
+from app.services.runtime_config import list_runtime_config_items, update_runtime_config_values
+from app.services.storage import queue_media_for_processing
 from app.utils.auth import admin_required, hash_password
 
 
@@ -35,8 +38,6 @@ def list_users():
 @admin_bp.post("/users")
 @admin_required
 def create_user():
-    from flask import g
-
     payload = request.get_json(force=True)
     session = SessionLocal()
     try:
@@ -57,8 +58,6 @@ def create_user():
 @admin_bp.patch("/users/<int:user_id>")
 @admin_required
 def update_user(user_id: int):
-    from flask import g
-
     payload = request.get_json(force=True)
     session = SessionLocal()
     try:
@@ -77,3 +76,80 @@ def update_user(user_id: int):
     finally:
         session.close()
 
+
+@admin_bp.get("/admin/runtime-config")
+@admin_required
+def get_runtime_config():
+    return jsonify({"items": list_runtime_config_items()})
+
+
+@admin_bp.patch("/admin/runtime-config")
+@admin_required
+def patch_runtime_config():
+    payload = request.get_json(force=True) or {}
+    updates = payload.get("updates") or {}
+    values = update_runtime_config_values(updates, updated_by_id=g.current_user.id)
+    if "processing_workers" in updates:
+        get_processing_coordinator().set_desired_workers(int(values["processing_workers"]))
+    audit(
+        "admin.runtime_config_updated",
+        f"Updated runtime config keys: {', '.join(sorted(updates.keys()))}",
+        actor_id=g.current_user.id,
+        context={"keys": sorted(updates.keys())},
+    )
+    return jsonify({"items": list_runtime_config_items()})
+
+
+@admin_bp.post("/admin/reindex-all")
+@admin_required
+def reindex_all_media():
+    session = SessionLocal()
+    queued_job_ids: list[str] = []
+    skipped_active_media = 0
+    total_media = 0
+    try:
+        media_rows = session.query(MediaItem.id, MediaItem.owner_id).order_by(MediaItem.created_at.asc()).all()
+        total_media = len(media_rows)
+        for media_id, owner_id in media_rows:
+            active_job = (
+                session.query(ProcessingJob.id)
+                .filter(
+                    ProcessingJob.media_id == media_id,
+                    ProcessingJob.status.in_([JobStatus.queued, JobStatus.processing]),
+                )
+                .first()
+            )
+            if active_job:
+                skipped_active_media += 1
+                continue
+
+            item = session.get(MediaItem, media_id)
+            if item is None:
+                continue
+            job = queue_media_for_processing(session, item)
+            queued_job_ids.append(job.id)
+        session.commit()
+    finally:
+        session.close()
+
+    coordinator = get_processing_coordinator()
+    for job_id in queued_job_ids:
+        coordinator.enqueue(job_id)
+
+    audit(
+        "admin.reindex_all_media",
+        f"Queued full library reindex for {len(queued_job_ids)} items",
+        actor_id=g.current_user.id,
+        context={
+            "total_media": total_media,
+            "queued_jobs": len(queued_job_ids),
+            "skipped_active_media": skipped_active_media,
+        },
+    )
+    return jsonify(
+        {
+            "total_media": total_media,
+            "queued_jobs": len(queued_job_ids),
+            "skipped_active_media": skipped_active_media,
+        }
+    )

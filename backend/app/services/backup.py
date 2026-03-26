@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.models import BackupScope, BackupSnapshot, BackupStatus, MediaItem
 from app.services.audit import audit
+from app.services.runtime_config import get_runtime_value
 
 
 class ChunkedWriter:
@@ -89,7 +90,7 @@ class BackupService:
 
             output_dir = settings.backups_dir / snapshot.id
             output_dir.mkdir(parents=True, exist_ok=True)
-            writer = ChunkedWriter(output_dir, settings.backup_chunk_mb * 1024 * 1024)
+            writer = ChunkedWriter(output_dir, int(get_runtime_value("backup_chunk_mb")) * 1024 * 1024)
             manifest = self._build_manifest(session, snapshot.owner_id)
             with tarfile.open(fileobj=writer, mode="w|gz") as tar:
                 self._add_bytes(tar, "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -179,4 +180,3 @@ class BackupService:
 
 
 backup_service = BackupService()
-

@@ -7,8 +7,8 @@ from typing import Any
 from sqlalchemy import or_
 from sqlalchemy.orm import Query, Session
 
-from app.config import settings
 from app.models import AuditLog, JobStatus, ProcessingJob
+from app.services.processing import get_processing_coordinator
 from app.utils.datetimes import seconds_between
 
 
@@ -115,7 +115,7 @@ def build_processing_stats(
     )
 
     return {
-        "workers": settings.processing_workers,
+        "workers": get_processing_coordinator().worker_count() or get_processing_coordinator().desired_worker_count(),
         "queued": queued_count,
         "processing": processing_count,
         "failed": failed_count,

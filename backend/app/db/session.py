@@ -29,7 +29,6 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 
 def init_db() -> None:
-    from app.models.entities import ArchiveImport, AuditLog, BackupSnapshot, MediaItem, MediaTag, ProcessingJob, Tag, User  # noqa: F401
+    from app.models.entities import AppConfigEntry, ArchiveImport, AuditLog, BackupSnapshot, MediaItem, MediaTag, ProcessingJob, Tag, User  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
-

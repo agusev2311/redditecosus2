@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from app.config import settings
 from app.models import TimestampPrecision
+from app.services.runtime_config import get_runtime_value
 
 
 @dataclass
@@ -33,7 +33,7 @@ def parse_filename_timestamp(filename: str) -> ParsedTimestamp | None:
             parsed = datetime.strptime(raw, fmt)
         except ValueError:
             continue
-        localized = parsed.replace(tzinfo=ZoneInfo(settings.default_timezone))
+        localized = parsed.replace(tzinfo=ZoneInfo(str(get_runtime_value("default_timezone"))))
         return ParsedTimestamp(localized.astimezone(timezone.utc), precision)
 
     epoch_match = re.search(r"(?<!\d)(1\d{9}|1\d{12})(?!\d)", stem)
@@ -42,4 +42,3 @@ def parse_filename_timestamp(filename: str) -> ParsedTimestamp | None:
         stamp = datetime.fromtimestamp(int(raw) / (1000 if len(raw) == 13 else 1), tz=timezone.utc)
         return ParsedTimestamp(stamp, TimestampPrecision.second)
     return None
-

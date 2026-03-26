@@ -6,6 +6,7 @@ import {
   createUser,
   getBootstrapStatus,
   getOverview,
+  getRuntimeConfig,
   getStorage,
   getUsers,
   listBackups,
@@ -15,10 +16,12 @@ import {
   mediaAssetUrl,
   me,
   reindexMedia,
+  reindexAllMedia,
   retryFailedJobs,
+  updateRuntimeConfig,
   uploadFiles,
 } from './api'
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, SafetyRating, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, RuntimeConfigItem, SafetyRating, User } from './types'
 
 type WorkspaceTab = 'library' | 'processing' | 'backups' | 'activity' | 'admin'
 
@@ -91,6 +94,15 @@ function trimText(value: string | null | undefined, fallback: string, max = 180)
   const text = (value ?? '').trim()
   if (!text) return fallback
   return text.length <= max ? text : `${text.slice(0, max).trimEnd()}...`
+}
+
+function primaryDescription(item: MediaItem) {
+  return item.description_ru ?? item.description ?? ''
+}
+
+function configValueToInput(value: string | number | boolean) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  return `${value}`
 }
 
 function roleLabel(user: User | null) {
@@ -168,7 +180,7 @@ function MediaCard({ item, token, active, onOpen }: { item: MediaItem; token: st
           <small>{formatBytes(item.file_size)}</small>
         </div>
         <h3 title={item.original_filename}>{item.original_filename}</h3>
-        <p>{trimText(item.description, 'AI-описание пока не готово. После индексации здесь появится краткий разбор сцены.', 120)}</p>
+        <p>{trimText(primaryDescription(item), 'AI-описание пока не готово. После индексации здесь появится краткий разбор сцены.', 120)}</p>
         <div className="row-meta compact">
           <span>{item.width && item.height ? `${item.width}×${item.height}` : kindLabel(item.kind)}</span>
           <span>{item.duration_seconds ? formatDuration(item.duration_seconds) : formatDate(item.normalized_timestamp)}</span>
@@ -195,6 +207,8 @@ function App() {
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [storage, setStorage] = useState<DiskUsagePayload | null>(null)
   const [users, setUsers] = useState<User[]>([])
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigItem[]>([])
+  const [runtimeConfigForm, setRuntimeConfigForm] = useState<Record<string, string>>({})
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
   const [searchInput, setSearchInput] = useState('')
@@ -213,6 +227,8 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [retryingFailed, setRetryingFailed] = useState(false)
+  const [savingRuntimeConfig, setSavingRuntimeConfig] = useState(false)
+  const [reindexingAll, setReindexingAll] = useState(false)
   const deferredSearch = useDeferredValue(searchInput)
 
   useEffect(() => {
@@ -242,13 +258,21 @@ function App() {
         setJobs(jobsPayload.items)
         setBackups(backupsPayload.items)
         if (currentUser.role === 'admin') {
-          const [storagePayload, usersPayload] = await Promise.all([getStorage(token), getUsers(token)])
+          const [storagePayload, usersPayload, runtimeConfigPayload] = await Promise.all([getStorage(token), getUsers(token), getRuntimeConfig(token)])
           if (cancelled) return
           setStorage(storagePayload)
           setUsers(usersPayload.items)
+          setRuntimeConfig(runtimeConfigPayload.items)
+          setRuntimeConfigForm((current) => (
+            Object.keys(current).length
+              ? current
+              : Object.fromEntries(runtimeConfigPayload.items.map((item) => [item.key, configValueToInput(item.value)]))
+          ))
         } else {
           setStorage(null)
           setUsers([])
+          setRuntimeConfig([])
+          setRuntimeConfigForm({})
         }
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : 'Failed to refresh dashboard')
@@ -377,6 +401,42 @@ function App() {
     }
   }
 
+  const handleSaveRuntimeConfig = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!token || currentUser?.role !== 'admin' || savingRuntimeConfig) return
+    setError('')
+    setNotice('')
+    setSavingRuntimeConfig(true)
+    try {
+      const updates = Object.fromEntries(runtimeConfig.map((item) => [item.key, runtimeConfigForm[item.key] ?? configValueToInput(item.value)]))
+      const payload = await updateRuntimeConfig(token, updates)
+      setRuntimeConfig(payload.items)
+      setRuntimeConfigForm(Object.fromEntries(payload.items.map((item) => [item.key, configValueToInput(item.value)])))
+      setNotice('Runtime config сохранен')
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Runtime config update failed')
+    } finally {
+      setSavingRuntimeConfig(false)
+    }
+  }
+
+  const handleReindexAllMedia = async () => {
+    if (!token || currentUser?.role !== 'admin' || reindexingAll) return
+    setError('')
+    setNotice('')
+    setReindexingAll(true)
+    try {
+      const result = await reindexAllMedia(token)
+      setNotice(`Полный reindex: queued ${result.queued_jobs} · skipped active ${result.skipped_active_media} · total ${result.total_media}`)
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Full reindex request failed')
+    } finally {
+      setReindexingAll(false)
+    }
+  }
+
   const openMedia = (item: MediaItem) => startTransition(() => {
     setSelectedMedia(item)
     setViewerOpen(true)
@@ -388,6 +448,8 @@ function App() {
     setOverview(emptyOverview)
     setStorage(null)
     setUsers([])
+    setRuntimeConfig([])
+    setRuntimeConfigForm({})
     setMedia([])
     setJobs([])
     setBackups([])
@@ -649,6 +711,43 @@ function App() {
               ) : <p className="muted">Storage analytics unavailable.</p>}
             </section>
             <section className="glass-panel admin-panel">
+              <div className="panel-head"><div><span>Операции</span><h2>Переиндексация и runtime config</h2></div></div>
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={() => void handleReindexAllMedia()} disabled={reindexingAll}>
+                  {reindexingAll ? 'Ставим в очередь...' : 'Переиндексировать всю библиотеку'}
+                </button>
+              </div>
+              <form className="runtime-config-form" onSubmit={handleSaveRuntimeConfig}>
+                {runtimeConfig.map((item) => (
+                  <label key={item.key}>
+                    {item.label}
+                    {item.kind === 'boolean' ? (
+                      <select value={runtimeConfigForm[item.key] ?? configValueToInput(item.value)} onChange={(event) => setRuntimeConfigForm((current) => ({ ...current, [item.key]: event.target.value }))}>
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    ) : item.kind === 'enum' ? (
+                      <select value={runtimeConfigForm[item.key] ?? configValueToInput(item.value)} onChange={(event) => setRuntimeConfigForm((current) => ({ ...current, [item.key]: event.target.value }))}>
+                        {item.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type={item.kind === 'integer' ? 'number' : 'text'}
+                        min={item.min ?? undefined}
+                        max={item.max ?? undefined}
+                        value={runtimeConfigForm[item.key] ?? configValueToInput(item.value)}
+                        onChange={(event) => setRuntimeConfigForm((current) => ({ ...current, [item.key]: event.target.value }))}
+                      />
+                    )}
+                    <small>{item.description}</small>
+                  </label>
+                ))}
+                <button className="primary-button" type="submit" disabled={savingRuntimeConfig}>
+                  {savingRuntimeConfig ? 'Сохраняем...' : 'Сохранить конфиг'}
+                </button>
+              </form>
+            </section>
+            <section className="glass-panel admin-panel">
               <div className="panel-head"><div><span>Доступ</span><h2>Пользователи и роли</h2></div></div>
               <form className="admin-form" onSubmit={handleCreateUser}>
                 <label>username<input value={newUserForm.username} onChange={(event) => setNewUserForm({ ...newUserForm, username: event.target.value })} required /></label>
@@ -673,7 +772,14 @@ function App() {
               <div className="modal-preview">{selectedMedia.kind === 'video' ? <video controls src={mediaAssetUrl(selectedMedia.file_url, token)} /> : <img src={mediaAssetUrl(selectedMedia.file_url, token)} alt={selectedMedia.original_filename} />}</div>
               <div className="modal-copy">
                 <div className="chip-row"><span className={`badge badge-${selectedMedia.safety_rating}`}>{ratingLabel(selectedMedia.safety_rating)}</span><span className={`badge badge-status-${selectedMedia.processing_status}`}>{selectedMedia.processing_status}</span></div>
-                <p>{trimText(selectedMedia.description, 'AI-описание пока отсутствует.', 520)}</p>
+                <div className="note-block">
+                  <span>Описание RU</span>
+                  <p>{trimText(selectedMedia.description_ru ?? selectedMedia.description, 'AI-описание пока отсутствует.', 1200)}</p>
+                </div>
+                <div className="note-block">
+                  <span>Description EN</span>
+                  <p>{trimText(selectedMedia.description_en, 'English description is not available yet.', 1200)}</p>
+                </div>
                 <div className="detail-grid">
                   <div><span>Размер</span><strong>{formatBytes(selectedMedia.file_size)}</strong></div>
                   <div><span>Разрешение</span><strong>{selectedMedia.width && selectedMedia.height ? `${selectedMedia.width}×${selectedMedia.height}` : 'n/a'}</strong></div>

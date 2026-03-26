@@ -95,6 +95,16 @@ class User(Base):
     media_items: Mapped[list["MediaItem"]] = relationship(back_populates="owner")
 
 
+class AppConfigEntry(Base):
+    __tablename__ = "app_config_entries"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class ArchiveImport(Base):
     __tablename__ = "archive_imports"
 
@@ -222,4 +232,3 @@ class AuditLog(Base):
     message: Mapped[str] = mapped_column(Text)
     context: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-

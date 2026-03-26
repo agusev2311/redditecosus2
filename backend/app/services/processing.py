@@ -4,11 +4,11 @@ import queue
 import threading
 from datetime import datetime, timezone
 
-from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, ProcessingStatus, SafetyRating, Tag, TagKind, TagOrigin
 from app.services.ai_proxy import ai_proxy_service
 from app.services.audit import audit
+from app.services.runtime_config import get_runtime_value
 from app.services.storage import queue_media_for_processing
 from app.utils.datetimes import seconds_between
 
@@ -16,7 +16,11 @@ from app.utils.datetimes import seconds_between
 class ProcessingCoordinator:
     def __init__(self) -> None:
         self._queue: queue.Queue[str] = queue.Queue()
-        self._workers: list[threading.Thread] = []
+        self._workers: dict[int, threading.Thread] = {}
+        self._worker_stops: dict[int, threading.Event] = {}
+        self._worker_counter = 0
+        self._desired_workers = 0
+        self._lock = threading.Lock()
         self._booted = False
 
     def boot(self) -> None:
@@ -24,13 +28,45 @@ class ProcessingCoordinator:
             return
         self._booted = True
         self._enqueue_existing_jobs()
-        for index in range(settings.processing_workers):
-            worker = threading.Thread(target=self._run, name=f"media-worker-{index}", daemon=True)
-            worker.start()
-            self._workers.append(worker)
+        self.set_desired_workers(int(get_runtime_value("processing_workers")))
 
     def enqueue(self, job_id: str) -> None:
         self._queue.put(job_id)
+
+    def desired_worker_count(self) -> int:
+        with self._lock:
+            return self._desired_workers
+
+    def worker_count(self) -> int:
+        with self._lock:
+            self._workers = {worker_id: thread for worker_id, thread in self._workers.items() if thread.is_alive()}
+            self._worker_stops = {worker_id: stop for worker_id, stop in self._worker_stops.items() if worker_id in self._workers}
+            return len(self._workers)
+
+    def set_desired_workers(self, count: int) -> int:
+        target = max(1, int(count))
+        with self._lock:
+            self._workers = {worker_id: thread for worker_id, thread in self._workers.items() if thread.is_alive()}
+            self._worker_stops = {worker_id: stop for worker_id, stop in self._worker_stops.items() if worker_id in self._workers}
+            self._desired_workers = target
+
+            current_ids = sorted(self._workers.keys())
+            if len(current_ids) < target:
+                for _ in range(target - len(current_ids)):
+                    self._worker_counter += 1
+                    worker_id = self._worker_counter
+                    stop_event = threading.Event()
+                    worker = threading.Thread(target=self._run, args=(worker_id, stop_event), name=f"media-worker-{worker_id}", daemon=True)
+                    self._workers[worker_id] = worker
+                    self._worker_stops[worker_id] = stop_event
+                    worker.start()
+            elif len(current_ids) > target:
+                for worker_id in current_ids[target:]:
+                    stop_event = self._worker_stops.get(worker_id)
+                    if stop_event is not None:
+                        stop_event.set()
+
+        return self.worker_count()
 
     def _enqueue_existing_jobs(self) -> None:
         session = SessionLocal()
@@ -41,9 +77,17 @@ class ProcessingCoordinator:
         finally:
             session.close()
 
-    def _run(self) -> None:
+    def _run(self, worker_id: int, stop_event: threading.Event) -> None:
         while True:
-            job_id = self._queue.get()
+            if stop_event.is_set():
+                with self._lock:
+                    self._workers.pop(worker_id, None)
+                    self._worker_stops.pop(worker_id, None)
+                return
+            try:
+                job_id = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
             try:
                 self._process(job_id)
             finally:

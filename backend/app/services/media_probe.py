@@ -11,8 +11,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from app.config import settings
 from app.models import MediaKind
+from app.services.runtime_config import get_runtime_value
 
 try:
     import magic  # type: ignore
@@ -117,14 +117,16 @@ def probe_media(path: Path, kind: MediaKind) -> MediaProbe:
 
 
 def _thumbnail_from_image(path: Path, output_path: Path) -> None:
+    thumbnail_width = int(get_runtime_value("thumbnail_width"))
     with Image.open(path) as image:
         image = ImageOps.exif_transpose(image.convert("RGB"))
-        image.thumbnail((settings.thumbnail_width, settings.thumbnail_width))
+        image.thumbnail((thumbnail_width, thumbnail_width))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(output_path, format="JPEG", quality=88)
 
 
 def _thumbnail_from_video(path: Path, output_path: Path) -> None:
+    thumbnail_width = int(get_runtime_value("thumbnail_width"))
     capture = cv2.VideoCapture(str(path))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     capture.set(cv2.CAP_PROP_POS_FRAMES, max(frame_count // 3, 0))
@@ -133,7 +135,7 @@ def _thumbnail_from_video(path: Path, output_path: Path) -> None:
     if not ok:
         return
     image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    image.thumbnail((settings.thumbnail_width, settings.thumbnail_width))
+    image.thumbnail((thumbnail_width, thumbnail_width))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="JPEG", quality=88)
 

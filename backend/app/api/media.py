@@ -18,6 +18,11 @@ media_bp = Blueprint("media", __name__)
 
 def _media_to_dict(item: MediaItem) -> dict:
     thumbnail_path = absolute_thumbnail_path(item)
+    description_ru = None
+    description_en = None
+    if isinstance(item.ai_payload, dict):
+        description_ru = item.ai_payload.get("description_ru")
+        description_en = item.ai_payload.get("description_en")
     return {
         "id": item.id,
         "kind": item.kind.value,
@@ -30,6 +35,8 @@ def _media_to_dict(item: MediaItem) -> dict:
         "blur_score": item.blur_score,
         "safety_rating": item.safety_rating.value,
         "description": item.description,
+        "description_ru": description_ru,
+        "description_en": description_en,
         "technical_notes": item.technical_notes,
         "processing_status": item.processing_status.value,
         "normalized_timestamp": item.normalized_timestamp.isoformat() if item.normalized_timestamp else None,

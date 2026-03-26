@@ -154,6 +154,7 @@ select:focus {
 .sidebar-summary,
 .sidebar-nav,
 .sidebar-foot,
+.runtime-config-form,
 .list-stack,
 .progress-block,
 .gallery-body,
@@ -639,6 +640,7 @@ button:disabled {
   position: relative;
   aspect-ratio: 4 / 3;
   background: rgba(0, 0, 0, 0.22);
+  overflow: hidden;
 }
 
 .gallery-preview img,
@@ -647,7 +649,12 @@ button:disabled {
 .modal-preview video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+}
+
+.gallery-preview img,
+.gallery-preview video {
+  padding: 0.35rem;
 }
 
 .gallery-empty,
@@ -714,10 +721,13 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) 360px;
   gap: 1rem;
+  align-items: start;
 }
 
 .modal-preview {
-  min-height: 460px;
+  height: min(72vh, 820px);
+  min-height: 280px;
+  max-height: calc(100vh - 180px);
   border-radius: 24px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.22);
@@ -732,6 +742,10 @@ button:disabled {
   display: grid;
   gap: 0.45rem;
   padding: 1rem;
+}
+
+.runtime-config-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .mobile-only {
@@ -751,6 +765,10 @@ button:disabled {
   .summary-grid,
   .filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .runtime-config-form {
+    grid-template-columns: 1fr;
   }
 
   .filter-span-2 {

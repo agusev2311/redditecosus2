@@ -89,12 +89,19 @@ def _derive_protogen(normalized_corpus: str, stable_tags: set[str]) -> bool:
     return has_visor and has_synthetic
 
 
-def enrich_analysis_tags(analysis: dict[str, Any], media: MediaItem) -> dict[str, Any]:
+def enrich_analysis_tags(
+    analysis: dict[str, Any],
+    media: MediaItem,
+    existing_tags_by_kind: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     semantic_tags = [normalize_tag_name(name) for name in analysis.get("semantic_tags", [])]
     semantic_tags = [name for name in semantic_tags if name]
+    preferred_semantic = {normalize_tag_name(name) for name in (existing_tags_by_kind or {}).get("semantic", [])}
 
     corpus_parts = [
         analysis.get("title", ""),
+        analysis.get("description_ru", ""),
+        analysis.get("description_en", ""),
         analysis.get("description", ""),
         analysis.get("text_in_media", ""),
         media.original_filename,
@@ -129,5 +136,10 @@ def enrich_analysis_tags(analysis: dict[str, Any], media: MediaItem) -> dict[str
         seen.add(name)
         ordered_tags.append(name)
 
-    analysis["semantic_tags"] = ordered_tags
+    if preferred_semantic:
+        preferred_first = [name for name in ordered_tags if name in preferred_semantic]
+        others = [name for name in ordered_tags if name not in preferred_semantic]
+        analysis["semantic_tags"] = preferred_first + others
+    else:
+        analysis["semantic_tags"] = ordered_tags
     return analysis

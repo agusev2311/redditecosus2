@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, ProcessingStatus, SafetyRating, Tag, TagKind, TagOrigin
-from app.services.ai_proxy import ai_proxy_service
+from app.services.ai_limit_guard import is_ai_proxy_sleep_active
+from app.services.ai_proxy import AIProxyLimitCooldownError, ai_proxy_service
 from app.services.audit import audit
 from app.services.runtime_config import get_runtime_value
 from app.services.storage import queue_media_for_processing
@@ -64,7 +65,7 @@ class ProcessingCoordinator:
             self._processing_slots.notify_all()
 
     def _processing_paused(self) -> bool:
-        return bool(get_runtime_value("processing_paused"))
+        return bool(get_runtime_value("processing_paused")) or is_ai_proxy_sleep_active()
 
     def set_desired_workers(self, count: int) -> int:
         target = max(1, int(count))
@@ -239,6 +240,26 @@ class ProcessingCoordinator:
                     "ai_seconds": (analysis.get("x_metrics") or {}).get("ai_seconds"),
                 },
             )
+        except AIProxyLimitCooldownError as exc:
+            session.rollback()
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = JobStatus.queued
+                job.error_message = f"AI proxy cooldown until {exc.sleep_until or 'unknown'} (HTTP {exc.status_code})"
+                job.started_at = None
+                job.completed_at = None
+                existing_payload = job.payload or {}
+                existing_payload["cooldown"] = {
+                    "status_code": exc.status_code,
+                    "sleep_until": exc.sleep_until,
+                    "detail": exc.detail,
+                    "worker": threading.current_thread().name,
+                }
+                job.payload = existing_payload
+                media = session.get(MediaItem, job.media_id)
+                if media is not None:
+                    media.processing_status = ProcessingStatus.pending
+                session.commit()
         except Exception as exc:
             session.rollback()
             job = session.get(ProcessingJob, job_id)

@@ -17,6 +17,7 @@ import {
   me,
   reindexMedia,
   reindexAllMedia,
+  resumeAIProxy,
   resetLibrary,
   retryFailedJobs,
   updateRuntimeConfig,
@@ -66,6 +67,16 @@ const emptyOverview: OverviewPayload = {
     jobs: 0,
   },
   processing_stats: emptyProcessingStats,
+  ai_proxy_sleep: {
+    active: false,
+    sleep_until: null,
+    triggered_at: null,
+    status_code: null,
+    last_error: null,
+    remaining_seconds: 0,
+    monitored_status_codes: [],
+    sleep_hours: 3,
+  },
   recent_logs: [],
   prompt_preview: '',
 }
@@ -290,6 +301,7 @@ function App() {
   const [retryingFailed, setRetryingFailed] = useState(false)
   const [savingRuntimeConfig, setSavingRuntimeConfig] = useState(false)
   const [reindexingAll, setReindexingAll] = useState(false)
+  const [resumingAIProxy, setResumingAIProxy] = useState(false)
   const [dangerConfirmation, setDangerConfirmation] = useState('')
   const [resettingLibrary, setResettingLibrary] = useState(false)
   const deferredSearch = useDeferredValue(searchInput)
@@ -502,6 +514,23 @@ function App() {
     }
   }
 
+  const handleResumeAIProxy = async () => {
+    if (!token || currentUser?.role !== 'admin' || resumingAIProxy) return
+    setError('')
+    setNotice('')
+    setResumingAIProxy(true)
+    try {
+      const result = await resumeAIProxy(token)
+      setOverview((current) => ({ ...current, ai_proxy_sleep: result.ai_proxy_sleep }))
+      setNotice('AI proxy cooldown снят вручную')
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'AI proxy resume failed')
+    } finally {
+      setResumingAIProxy(false)
+    }
+  }
+
   const handleResetLibrary = async (event: FormEvent) => {
     event.preventDefault()
     if (!token || currentUser?.role !== 'admin' || resettingLibrary) return
@@ -566,6 +595,7 @@ function App() {
   })
 
   const processingStats = overview.processing_stats ?? emptyProcessingStats
+  const aiProxySleep = overview.ai_proxy_sleep ?? emptyOverview.ai_proxy_sleep
   const queueCounts = {
     queued: processingStats.queued,
     processing: processingStats.processing,
@@ -903,6 +933,20 @@ function App() {
             </section>
             <section className="glass-panel admin-panel">
               <div className="panel-head"><div><span>Операции</span><h2>Переиндексация и runtime config</h2></div></div>
+              <div className="note-block">
+                <span>AI proxy cooldown</span>
+                <p>
+                  {aiProxySleep.active
+                    ? `Обработка спит до ${formatDate(aiProxySleep.sleep_until)} после HTTP ${aiProxySleep.status_code ?? 'unknown'}. Осталось ${formatDuration(aiProxySleep.remaining_seconds ?? 0)}.`
+                    : `Сейчас лимитного cooldown нет. Отслеживаемые коды: ${aiProxySleep.monitored_status_codes.join(', ') || 'n/a'}. Длительность сна: ${aiProxySleep.sleep_hours}ч.`}
+                </p>
+                {aiProxySleep.last_error ? <small className="muted">{trimText(aiProxySleep.last_error, '', 220)}</small> : null}
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => void handleResumeAIProxy()} disabled={resumingAIProxy || !aiProxySleep.active}>
+                    {resumingAIProxy ? 'Возобновляем...' : 'Возобновить сейчас'}
+                  </button>
+                </div>
+              </div>
               <div className="button-row">
                 <button className="secondary-button" type="button" onClick={() => void handleReindexAllMedia()} disabled={reindexingAll}>
                   {reindexingAll ? 'Ставим в очередь...' : 'Переиндексировать всю библиотеку'}

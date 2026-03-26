@@ -12,6 +12,7 @@ from sqlalchemy import func
 from app.config import _normalize_ai_proxy_base_url, settings
 from app.db.session import new_session
 from app.models import MediaItem, MediaTag, Tag, TagKind
+from app.services.ai_limit_guard import is_ai_proxy_limit_status, trigger_ai_proxy_limit_sleep
 from app.services.analysis_enrichment import enrich_analysis_tags
 from app.services.media_probe import extract_frames_for_model, probe_media, technical_tags
 from app.services.runtime_config import get_runtime_config_map
@@ -149,6 +150,18 @@ class AIProxyService:
             bucket.append(name)
         return tags_by_kind
 
+    def _build_http_error_detail(self, response: httpx.Response) -> str:
+        text = ""
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                text = json.dumps(payload, ensure_ascii=False)
+            else:
+                text = str(payload)
+        except Exception:
+            text = response.text
+        return f"{response.request.method} {response.request.url} -> HTTP {response.status_code}: {' '.join(text.split())[:1200]}"
+
     def analyze_media(self, media: MediaItem) -> dict[str, Any]:
         runtime_config = get_runtime_config_map()
         path = absolute_media_path(media)
@@ -224,7 +237,18 @@ class AIProxyService:
                     json=payload,
                 )
         elapsed = round(perf_counter() - started, 3)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if is_ai_proxy_limit_status(status_code):
+                state = trigger_ai_proxy_limit_sleep(status_code, self._build_http_error_detail(exc.response))
+                raise AIProxyLimitCooldownError(
+                    status_code=status_code,
+                    sleep_until=state["sleep_until"],
+                    detail=state.get("last_error") or "",
+                ) from exc
+            raise
         body = response.json()
         content_text = body["choices"][0]["message"]["content"]
         parsed = json.loads(content_text)
@@ -250,6 +274,14 @@ class AIProxyService:
             "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
         }
         return parsed
+
+
+class AIProxyLimitCooldownError(RuntimeError):
+    def __init__(self, *, status_code: int, sleep_until: str | None, detail: str) -> None:
+        self.status_code = status_code
+        self.sleep_until = sleep_until
+        self.detail = detail
+        super().__init__(f"AI proxy cooldown active after HTTP {status_code}; sleep until {sleep_until or 'unknown'}")
 
 
 ai_proxy_service = AIProxyService()

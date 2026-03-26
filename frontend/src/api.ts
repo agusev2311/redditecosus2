@@ -168,6 +168,16 @@ export function resetLibrary(token: string, confirmation: string) {
   )
 }
 
+export function resumeAIProxy(token: string) {
+  return request<{ ai_proxy_sleep: OverviewPayload['ai_proxy_sleep'] }>(
+    '/api/admin/ai-proxy/resume',
+    {
+      method: 'POST',
+    },
+    token,
+  )
+}
+
 export function createUser(token: string, payload: { username: string; password: string; role: 'admin' | 'member'; telegram_username: string }) {
   return request<{ user: User }>(
     '/api/users',

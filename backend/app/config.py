@@ -77,12 +77,15 @@ class Settings:
     ai_proxy_model: str = os.getenv("AI_PROXY_MODEL", "gpt-5.4")
     ai_proxy_reasoning_effort: str = os.getenv("AI_PROXY_REASONING_EFFORT", "xhigh")
     ai_proxy_max_concurrency: int = int(os.getenv("AI_PROXY_MAX_CONCURRENCY", "1"))
+    ai_proxy_limit_sleep_hours: int = int(os.getenv("AI_PROXY_LIMIT_SLEEP_HOURS", "3"))
+    ai_proxy_limit_status_codes: str = os.getenv("AI_PROXY_LIMIT_STATUS_CODES", "419,429")
     ai_proxy_timeout_seconds: int = int(os.getenv("AI_PROXY_TIMEOUT_SECONDS", "300"))
     ai_proxy_verify_tls: bool = _bool("AI_PROXY_VERIFY_TLS", True)
     ai_proxy_ca_bundle: str = os.getenv("AI_PROXY_CA_BUNDLE", "")
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_backup_chat_id: str = os.getenv("TELEGRAM_BACKUP_CHAT_ID", "")
+    telegram_alert_chat_id: str = os.getenv("TELEGRAM_ALERT_CHAT_ID", os.getenv("TELEGRAM_BACKUP_CHAT_ID", ""))
     telegram_inline_base_url: str = os.getenv("TELEGRAM_INLINE_BASE_URL", "")
 
     data_root: Path = Path(os.getenv("APP_DATA_ROOT") or str(BASE_DIR))

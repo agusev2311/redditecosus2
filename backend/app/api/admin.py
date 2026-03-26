@@ -5,6 +5,7 @@ from flask import Blueprint, g, jsonify, request
 from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, ProcessingJob, User, UserRole
+from app.services.ai_limit_guard import clear_ai_proxy_limit_sleep
 from app.services.audit import audit
 from app.services.danger_zone import DANGER_RESET_CONFIRMATION, full_library_reset
 from app.services.processing import get_processing_coordinator
@@ -103,6 +104,15 @@ def patch_runtime_config():
         context={"keys": sorted(updates.keys())},
     )
     return jsonify({"items": list_runtime_config_items()})
+
+
+@admin_bp.post("/admin/ai-proxy/resume")
+@admin_required
+def resume_ai_proxy():
+    coordinator = get_processing_coordinator()
+    state = clear_ai_proxy_limit_sleep(updated_by_id=g.current_user.id)
+    coordinator.notify_capacity_changed()
+    return jsonify({"ai_proxy_sleep": state})
 
 
 @admin_bp.post("/admin/reindex-all")

@@ -79,6 +79,17 @@ export interface ProcessingStats {
   oldest_queued_seconds?: number | null
 }
 
+export interface AIProxySleepState {
+  active: boolean
+  sleep_until?: string | null
+  triggered_at?: string | null
+  status_code?: number | null
+  last_error?: string | null
+  remaining_seconds?: number | null
+  monitored_status_codes: number[]
+  sleep_hours: number
+}
+
 export interface OverviewPayload {
   counts: {
     media: number
@@ -104,6 +115,7 @@ export interface OverviewPayload {
     jobs: number
   }
   processing_stats: ProcessingStats
+  ai_proxy_sleep: AIProxySleepState
   recent_logs: LogItem[]
   prompt_preview: string
 }

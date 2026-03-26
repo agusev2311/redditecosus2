@@ -72,6 +72,22 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
         min_value=1,
         max_value=8,
     ),
+    "ai_proxy_limit_sleep_hours": RuntimeConfigSpec(
+        key="ai_proxy_limit_sleep_hours",
+        label="AI limit sleep hours",
+        description="На сколько часов усыплять обработку после ответа лимита от AI proxy.",
+        kind="integer",
+        default=settings.ai_proxy_limit_sleep_hours,
+        min_value=1,
+        max_value=24,
+    ),
+    "ai_proxy_limit_status_codes": RuntimeConfigSpec(
+        key="ai_proxy_limit_status_codes",
+        label="AI limit status codes",
+        description="HTTP-коды, которые считаются признаком исчерпанных лимитов. Например: 419,429",
+        kind="string",
+        default=settings.ai_proxy_limit_status_codes,
+    ),
     "ai_proxy_timeout_seconds": RuntimeConfigSpec(
         key="ai_proxy_timeout_seconds",
         label="AI timeout",

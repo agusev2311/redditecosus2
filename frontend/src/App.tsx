@@ -310,12 +310,11 @@ function App() {
     })
   })
 
+  const backlogCount = queueCounts.queued + queueCounts.processing
   const spotlight = selectedMedia ?? media[0] ?? null
   const trendingTags = Array.from(tagCountMap.values())
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
     .slice(0, 8)
-
-  const backlogCount = queueCounts.queued + queueCounts.processing
   const aiCoverage = media.length ? Math.round((completedMedia / media.length) * 100) : 0
   const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
   const projectUsageTotal = storage?.project.total ?? 0
@@ -333,79 +332,34 @@ function App() {
   if (!token || !currentUser) {
     return (
       <main className="auth-shell">
-        <div className="auth-backdrop auth-backdrop-a" />
-        <div className="auth-backdrop auth-backdrop-b" />
-        <section className="auth-stage glass-panel">
-          <div className="auth-story">
-            <div className="eyebrow">Private AI Media Vault</div>
-            <h1>Соберите хаос из Reddit-медиа в нормальную систему поиска.</h1>
-            <p className="lede">
-              Архивы, видео, GIF и изображения складываются в изолированные библиотеки пользователей, проходят AI-разбор, получают описание,
-              safety, blur и технические теги, а потом быстро находятся по памяти, а не по названию файла.
-            </p>
-            <div className="auth-mosaic">
-              <article className="feature-card">
-                <span>AI Indexing</span>
-                <strong>Подробные описания и теги</strong>
-                <p>Нейросеть раскладывает сцену, технику, safety и контекст по понятным меткам.</p>
-              </article>
-              <article className="feature-card">
-                <span>Archive Imports</span>
-                <strong>Вложенные папки и тяжелые архивы</strong>
-                <p>Можно закинуть архив целиком, а система сама разберет его на отдельные медиа и очередь задач.</p>
-              </article>
-              <article className="feature-card">
-                <span>Telegram Loop</span>
-                <strong>Бэкапы и быстрый шеринг</strong>
-                <p>Работа через сайт и Telegram-бота, включая бэкапы чанками и inline-отправку.</p>
-              </article>
-            </div>
-          </div>
+        <section className="auth-card glass-panel">
+          <div className="eyebrow">Private AI Media Vault</div>
+          <h1>{needsBootstrap ? 'Создайте первого администратора' : 'Вход в библиотеку'}</h1>
+          <p className="lede">
+            Минималистичная медиатека для изображений, GIF, видео и архивов с AI-индексацией и раздельными библиотеками пользователей.
+          </p>
 
-          <section className="auth-panel">
-            <div className="auth-panel-head">
-              <div className="panel-kicker">{needsBootstrap ? 'Bootstrap' : 'Sign In'}</div>
-              <h2>{needsBootstrap ? 'Создайте первого администратора' : 'Вход в рабочее пространство'}</h2>
-              <p className="muted">
-                {needsBootstrap
-                  ? 'Первый пользователь получит права администратора и сможет создавать остальные библиотеки.'
-                  : 'Каждый пользователь работает только со своей базой медиа, тегов и поиска.'}
-              </p>
-            </div>
-
-            <form className="auth-form" onSubmit={handleAuthSubmit}>
+          <form className="auth-form" onSubmit={handleAuthSubmit}>
+            <label>
+              Логин
+              <input value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} required />
+            </label>
+            <label>
+              Пароль
+              <input type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} required />
+            </label>
+            {needsBootstrap ? (
               <label>
-                Логин
-                <input value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} required />
+                Telegram username
+                <input value={authForm.telegram} onChange={(event) => setAuthForm({ ...authForm, telegram: event.target.value })} placeholder="@username" />
               </label>
-              <label>
-                Пароль
-                <input type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} required />
-              </label>
-              {needsBootstrap ? (
-                <label>
-                  Telegram username
-                  <input value={authForm.telegram} onChange={(event) => setAuthForm({ ...authForm, telegram: event.target.value })} placeholder="@username" />
-                </label>
-              ) : null}
-              <button className="primary-button" type="submit">
-                {needsBootstrap ? 'Инициализировать систему' : 'Открыть панель'}
-              </button>
-            </form>
+            ) : null}
+            <button className="primary-button" type="submit">
+              {needsBootstrap ? 'Инициализировать систему' : 'Войти'}
+            </button>
+          </form>
 
-            <div className="auth-points">
-              <div className="auth-point">
-                <span>Мультипользовательская изоляция</span>
-                <strong>Данные не пересекаются между людьми</strong>
-              </div>
-              <div className="auth-point">
-                <span>Без лимита на размер загрузки</span>
-                <strong>Подходит для больших видео и архивов</strong>
-              </div>
-            </div>
-
-            {error ? <div className="inline-error">{error}</div> : null}
-          </section>
+          {error ? <div className="inline-error">{error}</div> : null}
         </section>
       </main>
     )
@@ -413,36 +367,20 @@ function App() {
 
   return (
     <main className="workspace-shell">
-      <div className="app-backdrop app-backdrop-a" />
-      <div className="app-backdrop app-backdrop-b" />
-
       <header className="topbar glass-panel">
         <div className="brand-lockup">
           <div className="brand-mark">RE2</div>
-          <div>
-            <div className="eyebrow">Reddit Ecosystem 2</div>
-            <h2>Control Center</h2>
+          <div className="brand-copy">
+            <strong>Reddit Ecosystem 2</strong>
+            <small>
+              {currentUser.username} · {roleLabel(currentUser)}
+            </small>
           </div>
         </div>
 
-        <div className="topbar-signals">
-          <div className="signal-pill">
-            <span>Пользователь</span>
-            <strong>{currentUser.username}</strong>
-          </div>
-          <div className="signal-pill">
-            <span>Роль</span>
-            <strong>{roleLabel(currentUser)}</strong>
-          </div>
-          <div className="signal-pill">
-            <span>Автообновление</span>
-            <strong>Каждые 12с</strong>
-          </div>
-        </div>
-
-        <div className="hero-actions">
+        <div className="topbar-actions">
           <button className="secondary-button" type="button" onClick={() => setRefreshNonce((value) => value + 1)}>
-            Обновить данные
+            Обновить
           </button>
           <button className="ghost-button" type="button" onClick={logout}>
             Выйти
@@ -715,6 +653,7 @@ function App() {
                       type="button"
                       onClick={() => {
                         setSelectedMedia(item)
+                        setViewerOpen(true)
                       }}
                     >
                       <span className="sr-only">Select media</span>

@@ -153,6 +153,16 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Command not found: $1"
 }
 
+normalize_ai_proxy_base_url() {
+  case "$AI_PROXY_BASE_URL" in
+    http://127.0.0.1:*|https://127.0.0.1:*|http://localhost:*|https://localhost:*)
+      AI_PROXY_BASE_URL="${AI_PROXY_BASE_URL/127.0.0.1/host.docker.internal}"
+      AI_PROXY_BASE_URL="${AI_PROXY_BASE_URL/localhost/host.docker.internal}"
+      log "AI proxy URL points to localhost. Rewriting it for Docker: $AI_PROXY_BASE_URL"
+      ;;
+  esac
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -472,6 +482,8 @@ fi
 [[ -n "$DOMAIN" ]] || fail "--domain is required"
 [[ -n "$AI_PROXY_BASE_URL" ]] || fail "--ai-proxy-base-url is required"
 [[ -n "$AI_PROXY_API_KEY" ]] || fail "--ai-proxy-api-key is required (or set AI_PROXY_API_KEY in environment)"
+
+normalize_ai_proxy_base_url
 
 if [[ -z "$APP_SECRET_KEY" ]]; then
   APP_SECRET_KEY="$(generate_secret)"

@@ -15,6 +15,8 @@ services:
     volumes:
       - app_data:/app/data
       - ${EXTRA_CA_CERTS_PATH:-./deploy/certs}:/run/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=5).read()"]
@@ -68,6 +70,8 @@ services:
     volumes:
       - app_data:/app/data
       - ${EXTRA_CA_CERTS_PATH:-./deploy/certs}:/run/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

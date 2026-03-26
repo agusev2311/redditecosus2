@@ -109,6 +109,12 @@ docker compose up -d --build
   - безопасный: положить CA bundle в каталог `EXTRA_CA_CERTS_PATH` и указать `AI_PROXY_CA_BUNDLE=/run/certs/<ваш-ca>.pem`
   - быстрый: поставить `AI_PROXY_VERIFY_TLS=false`
 
+### Важно про localhost и Docker
+
+- Если `cli-proxy-api` запущен на хостовой машине сервера, то внутри контейнера адрес `127.0.0.1` или `localhost` указывает не на хост, а на сам контейнер.
+- В docker-режиме проект автоматически подменяет `AI_PROXY_BASE_URL` с `127.0.0.1` / `localhost` на `host.docker.internal`, а `docker-compose` пробрасывает этот alias на хостовую машину.
+- Поэтому для Docker можно спокойно указывать `https://127.0.0.1:8317/v1` в setup-мастере: скрипт и backend сами приведут это к рабочему виду.
+
 ### Что внутри docker-стека
 
 - `backend` - Flask API под `gunicorn`

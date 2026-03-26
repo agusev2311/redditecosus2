@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,32 @@ def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(item for item in values if item)
 
 
+def _running_in_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _normalize_ai_proxy_base_url(value: str) -> str:
+    if not value or not _running_in_docker():
+        return value
+
+    parsed = urlsplit(value)
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return value
+
+    auth = ""
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth += f":{parsed.password}"
+        auth += "@"
+
+    netloc = f"{auth}host.docker.internal"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 @dataclass(frozen=True)
 class Settings:
     env: str = os.getenv("APP_ENV", "development")
@@ -42,7 +69,7 @@ class Settings:
     )
     trust_reverse_proxy: bool = _bool("APP_TRUST_REVERSE_PROXY", True)
 
-    ai_proxy_base_url: str = os.getenv("AI_PROXY_BASE_URL", "http://127.0.0.1:8317/v1")
+    ai_proxy_base_url: str = _normalize_ai_proxy_base_url(os.getenv("AI_PROXY_BASE_URL", "http://127.0.0.1:8317/v1"))
     ai_proxy_api_key: str = os.getenv("AI_PROXY_API_KEY", "")
     ai_proxy_model: str = os.getenv("AI_PROXY_MODEL", "gpt-5.4")
     ai_proxy_reasoning_effort: str = os.getenv("AI_PROXY_REASONING_EFFORT", "xhigh")

@@ -17,7 +17,7 @@ import {
   reindexMedia,
   uploadFiles,
 } from './api'
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, SafetyRating, User } from './types'
 
 const TOKEN_KEY = 're2_token'
 
@@ -44,9 +44,40 @@ function formatDate(value?: string | null) {
   return new Date(value).toLocaleString('ru-RU')
 }
 
+function formatDuration(value?: number | null) {
+  if (!value) return 'n/a'
+  const rounded = Math.max(1, Math.round(value))
+  const hours = Math.floor(rounded / 3600)
+  const minutes = Math.floor((rounded % 3600) / 60)
+  const seconds = rounded % 60
+  if (hours) return `${hours}ч ${minutes}м`
+  if (minutes) return `${minutes}м ${seconds.toString().padStart(2, '0')}с`
+  return `${seconds}с`
+}
+
+function trimText(value: string | null | undefined, fallback: string, max = 176) {
+  const source = (value ?? '').trim()
+  if (!source) return fallback
+  if (source.length <= max) return source
+  return `${source.slice(0, max).trimEnd()}...`
+}
+
 function roleLabel(user: User | null) {
   if (!user) return ''
-  return user.role === 'admin' ? 'Админ' : 'Участник'
+  return user.role === 'admin' ? 'Администратор' : 'Участник'
+}
+
+function kindLabel(kind: MediaItem['kind']) {
+  if (kind === 'image') return 'Изображение'
+  if (kind === 'gif') return 'GIF'
+  return 'Видео'
+}
+
+function ratingLabel(rating: SafetyRating) {
+  if (rating === 'sfw') return 'SFW'
+  if (rating === 'questionable') return 'Questionable'
+  if (rating === 'nsfw') return 'NSFW'
+  return 'Unknown'
 }
 
 function App() {
@@ -60,6 +91,7 @@ function App() {
   const [storage, setStorage] = useState<DiskUsagePayload | null>(null)
   const [users, setUsers] = useState<User[]>([])
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null)
+  const [viewerOpen, setViewerOpen] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [kindFilter, setKindFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState('')
@@ -67,6 +99,7 @@ function App() {
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [dragActive, setDragActive] = useState(false)
   const [error, setError] = useState('')
   const [authForm, setAuthForm] = useState({ username: '', password: '', telegram: '' })
   const [newUserForm, setNewUserForm] = useState({ username: '', password: '', telegram: '', role: 'member' as 'admin' | 'member' })
@@ -138,6 +171,19 @@ function App() {
     }
   }, [token, currentUser, deferredSearch, kindFilter, ratingFilter, statusFilter, refreshNonce])
 
+  useEffect(() => {
+    if (!selectedMedia) return
+    const refreshed = media.find((item) => item.id === selectedMedia.id)
+    if (!refreshed) {
+      setSelectedMedia(null)
+      setViewerOpen(false)
+      return
+    }
+    if (refreshed !== selectedMedia) {
+      setSelectedMedia(refreshed)
+    }
+  }, [media, selectedMedia])
+
   const handleAuthSubmit = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
@@ -173,6 +219,7 @@ function App() {
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
+    setDragActive(false)
     void handleFiles(Array.from(event.dataTransfer.files))
   }
 
@@ -230,7 +277,54 @@ function App() {
     setMedia([])
     setJobs([])
     setBackups([])
+    setSelectedMedia(null)
+    setViewerOpen(false)
   }
+
+  const jumpToSection = (sectionId: string) => {
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const queueCounts = { queued: 0, processing: 0, complete: 0, failed: 0 }
+  jobs.forEach((job) => {
+    queueCounts[job.status] += 1
+  })
+
+  const kindCounts = { image: 0, gif: 0, video: 0 }
+  let completedMedia = 0
+  let nsfwMedia = 0
+  const tagCountMap = new Map<string, { name: string; kind: string; count: number }>()
+
+  media.forEach((item) => {
+    kindCounts[item.kind] += 1
+    if (item.processing_status === 'complete') completedMedia += 1
+    if (item.safety_rating === 'nsfw') nsfwMedia += 1
+    ;(item.tags ?? []).forEach((tag) => {
+      const key = `${tag.kind}:${tag.name}`
+      const current = tagCountMap.get(key)
+      if (current) {
+        current.count += 1
+      } else {
+        tagCountMap.set(key, { name: tag.name, kind: tag.kind, count: 1 })
+      }
+    })
+  })
+
+  const spotlight = selectedMedia ?? media[0] ?? null
+  const trendingTags = Array.from(tagCountMap.values())
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+    .slice(0, 8)
+
+  const backlogCount = queueCounts.queued + queueCounts.processing
+  const aiCoverage = media.length ? Math.round((completedMedia / media.length) * 100) : 0
+  const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
+  const projectUsageTotal = storage?.project.total ?? 0
+  const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')
+  const highPriorityJobs = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 6)
+  const resultDescription =
+    searchInput || kindFilter || ratingFilter || statusFilter
+      ? 'Результаты уже отфильтрованы по вашему текущему запросу.'
+      : 'Последние материалы в персональной библиотеке. Клик по карточке переносит фокус на детальный просмотр справа.'
 
   if (needsBootstrap === null) {
     return <div className="loading-screen">Loading workspace...</div>
@@ -239,233 +333,557 @@ function App() {
   if (!token || !currentUser) {
     return (
       <main className="auth-shell">
-        <section className="auth-card glass">
-          <div className="eyebrow">Private AI Media Vault</div>
-          <h1>{needsBootstrap ? 'Создайте первого администратора' : 'Войдите в библиотеку'}</h1>
-          <p className="lede">
-            Сайт для сортировки огромных коллекций Reddit-медиа с AI-тегами, архивами, Telegram и полной изоляцией данных между пользователями.
-          </p>
-          <form className="auth-form" onSubmit={handleAuthSubmit}>
-            <label>
-              Логин
-              <input value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} required />
-            </label>
-            <label>
-              Пароль
-              <input type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} required />
-            </label>
-            {needsBootstrap ? (
+        <div className="auth-backdrop auth-backdrop-a" />
+        <div className="auth-backdrop auth-backdrop-b" />
+        <section className="auth-stage glass-panel">
+          <div className="auth-story">
+            <div className="eyebrow">Private AI Media Vault</div>
+            <h1>Соберите хаос из Reddit-медиа в нормальную систему поиска.</h1>
+            <p className="lede">
+              Архивы, видео, GIF и изображения складываются в изолированные библиотеки пользователей, проходят AI-разбор, получают описание,
+              safety, blur и технические теги, а потом быстро находятся по памяти, а не по названию файла.
+            </p>
+            <div className="auth-mosaic">
+              <article className="feature-card">
+                <span>AI Indexing</span>
+                <strong>Подробные описания и теги</strong>
+                <p>Нейросеть раскладывает сцену, технику, safety и контекст по понятным меткам.</p>
+              </article>
+              <article className="feature-card">
+                <span>Archive Imports</span>
+                <strong>Вложенные папки и тяжелые архивы</strong>
+                <p>Можно закинуть архив целиком, а система сама разберет его на отдельные медиа и очередь задач.</p>
+              </article>
+              <article className="feature-card">
+                <span>Telegram Loop</span>
+                <strong>Бэкапы и быстрый шеринг</strong>
+                <p>Работа через сайт и Telegram-бота, включая бэкапы чанками и inline-отправку.</p>
+              </article>
+            </div>
+          </div>
+
+          <section className="auth-panel">
+            <div className="auth-panel-head">
+              <div className="panel-kicker">{needsBootstrap ? 'Bootstrap' : 'Sign In'}</div>
+              <h2>{needsBootstrap ? 'Создайте первого администратора' : 'Вход в рабочее пространство'}</h2>
+              <p className="muted">
+                {needsBootstrap
+                  ? 'Первый пользователь получит права администратора и сможет создавать остальные библиотеки.'
+                  : 'Каждый пользователь работает только со своей базой медиа, тегов и поиска.'}
+              </p>
+            </div>
+
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
               <label>
-                Telegram username
-                <input value={authForm.telegram} onChange={(event) => setAuthForm({ ...authForm, telegram: event.target.value })} placeholder="@username" />
+                Логин
+                <input value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} required />
               </label>
-            ) : null}
-            <button className="primary-button" type="submit">
-              {needsBootstrap ? 'Инициализировать систему' : 'Войти'}
-            </button>
-          </form>
-          {error ? <div className="inline-error">{error}</div> : null}
+              <label>
+                Пароль
+                <input type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} required />
+              </label>
+              {needsBootstrap ? (
+                <label>
+                  Telegram username
+                  <input value={authForm.telegram} onChange={(event) => setAuthForm({ ...authForm, telegram: event.target.value })} placeholder="@username" />
+                </label>
+              ) : null}
+              <button className="primary-button" type="submit">
+                {needsBootstrap ? 'Инициализировать систему' : 'Открыть панель'}
+              </button>
+            </form>
+
+            <div className="auth-points">
+              <div className="auth-point">
+                <span>Мультипользовательская изоляция</span>
+                <strong>Данные не пересекаются между людьми</strong>
+              </div>
+              <div className="auth-point">
+                <span>Без лимита на размер загрузки</span>
+                <strong>Подходит для больших видео и архивов</strong>
+              </div>
+            </div>
+
+            {error ? <div className="inline-error">{error}</div> : null}
+          </section>
         </section>
       </main>
     )
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero glass">
-        <div className="hero-copy">
-          <div className="eyebrow">Reddit Ecosystem 2</div>
-          <h1>Найти тот самый файл должно быть проще, чем вспомнить его название.</h1>
-          <p className="lede">
-            AI описывает изображения, GIF и видео, выделяет технические теги, безопасность, blur и время из имени файла, а каждая библиотека живет строго отдельно от других.
-          </p>
+    <main className="workspace-shell">
+      <div className="app-backdrop app-backdrop-a" />
+      <div className="app-backdrop app-backdrop-b" />
+
+      <header className="topbar glass-panel">
+        <div className="brand-lockup">
+          <div className="brand-mark">RE2</div>
+          <div>
+            <div className="eyebrow">Reddit Ecosystem 2</div>
+            <h2>Control Center</h2>
+          </div>
         </div>
-        <div className="hero-side">
-          <div className="profile-chip">
-            <span>{currentUser.username}</span>
+
+        <div className="topbar-signals">
+          <div className="signal-pill">
+            <span>Пользователь</span>
+            <strong>{currentUser.username}</strong>
+          </div>
+          <div className="signal-pill">
+            <span>Роль</span>
             <strong>{roleLabel(currentUser)}</strong>
           </div>
-          <div className="hero-actions">
-            <button className="secondary-button" type="button" onClick={() => setRefreshNonce((value) => value + 1)}>
-              Обновить
-            </button>
-            <button className="ghost-button" type="button" onClick={logout}>
-              Выйти
-            </button>
+          <div className="signal-pill">
+            <span>Автообновление</span>
+            <strong>Каждые 12с</strong>
           </div>
         </div>
-        <div className="stats-grid">
-          <article className="stat-card">
-            <span>Медиа</span>
-            <strong>{overview.counts.media}</strong>
-          </article>
-          <article className="stat-card">
-            <span>Jobs</span>
-            <strong>{overview.counts.jobs}</strong>
-          </article>
-          <article className="stat-card">
-            <span>Пользователи</span>
-            <strong>{overview.counts.users}</strong>
-          </article>
-          <article className="stat-card">
-            <span>Бэкапы</span>
-            <strong>{backups.length}</strong>
-          </article>
+
+        <div className="hero-actions">
+          <button className="secondary-button" type="button" onClick={() => setRefreshNonce((value) => value + 1)}>
+            Обновить данные
+          </button>
+          <button className="ghost-button" type="button" onClick={logout}>
+            Выйти
+          </button>
         </div>
-      </section>
+      </header>
 
-      {error ? <div className="global-error glass">{error}</div> : null}
+      {error ? <div className="global-error glass-panel">{error}</div> : null}
 
-      <section className="top-grid">
-        <article className="panel glass upload-panel" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-          <div className="panel-heading">
-            <div>
-              <div className="panel-kicker">Upload</div>
-              <h2>Медиа и архивы любого размера</h2>
-            </div>
-            <label className="primary-button file-button">
-              Выбрать файлы
-              <input type="file" multiple onChange={handlePick} />
-            </label>
-          </div>
-          <p className="muted">
-            Кидайте картинки, GIF, видео, ZIP, TAR, 7Z и другие архивы с вложенными папками. Система сама выделит медиа и поставит их в очередь на индексацию.
-          </p>
-          <div className="drop-zone">
-            <span>Drop zone</span>
-            <strong>Перетащите сюда медиа или архивы</strong>
-          </div>
-          <div className="progress-row">
-            <div className="progress-track">
-              <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
-            </div>
-            <span>{uploading ? `${uploadProgress}%` : 'Ready'}</span>
-          </div>
-        </article>
+      <div className="workspace-grid">
+        <aside className="left-rail">
+          <section className="glass-panel identity-panel">
+            <div className="panel-kicker">Workspace</div>
+            <h1>Файлы теперь живут в индексируемой библиотеке, а не в папочном хаосе.</h1>
+            <p className="lede">
+              Система уже знает, кто вы, сколько медиа в зоне ответственности, что происходит в очереди и насколько библиотека готова к поиску.
+            </p>
 
-        <article className="panel glass search-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="panel-kicker">Search</div>
-              <h2>Поиск по памяти, описанию и тегам</h2>
+            <div className="identity-grid">
+              <article className="metric-card">
+                <span>Всего медиа</span>
+                <strong>{overview.counts.media}</strong>
+              </article>
+              <article className="metric-card">
+                <span>AI coverage</span>
+                <strong>{aiCoverage}%</strong>
+              </article>
+              <article className="metric-card">
+                <span>Backlog</span>
+                <strong>{backlogCount}</strong>
+              </article>
+              <article className="metric-card">
+                <span>NSFW</span>
+                <strong>{nsfwMedia}</strong>
+              </article>
             </div>
-          </div>
-          <div className="filters">
-            <label className="filter-wide">
-              Запрос
-              <input
-                value={searchInput}
-                onChange={(event) => {
-                  startTransition(() => setSearchInput(event.target.value))
-                }}
-                placeholder="meme с белой кошкой, purple room, vertical anime gif..."
-              />
-            </label>
-            <label>
-              Тип
-              <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
-                <option value="">Все</option>
-                <option value="image">Image</option>
-                <option value="gif">GIF</option>
-                <option value="video">Video</option>
-              </select>
-            </label>
-            <label>
-              Safety
-              <select value={ratingFilter} onChange={(event) => setRatingFilter(event.target.value)}>
-                <option value="">Все</option>
-                <option value="sfw">SFW</option>
-                <option value="questionable">Questionable</option>
-                <option value="nsfw">NSFW</option>
-              </select>
-            </label>
-            <label>
-              Статус
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-                <option value="">Все</option>
-                <option value="pending">Pending</option>
-                <option value="processing">Processing</option>
-                <option value="complete">Complete</option>
-                <option value="failed">Failed</option>
-              </select>
-            </label>
-          </div>
-          <div className="log-strip">
-            {overview.recent_logs.slice(0, 4).map((log) => (
-              <div key={log.id} className={`log-pill severity-${log.severity}`}>
-                <span>{log.event_type}</span>
-                <small>{log.message}</small>
+
+            <div className="jump-grid">
+              <button className="jump-button" type="button" onClick={() => jumpToSection('library')}>
+                Библиотека
+              </button>
+              <button className="jump-button" type="button" onClick={() => jumpToSection('queue')}>
+                Очередь
+              </button>
+              <button className="jump-button" type="button" onClick={() => jumpToSection('backups')}>
+                Бэкапы
+              </button>
+              {currentUser.role === 'admin' ? (
+                <button className="jump-button" type="button" onClick={() => jumpToSection('admin')}>
+                  Админ
+                </button>
+              ) : null}
+            </div>
+          </section>
+
+          <section
+            id="upload"
+            className={`glass-panel upload-panel ${dragActive ? 'is-dragging' : ''}`}
+            onDragOver={(event) => {
+              event.preventDefault()
+              setDragActive(true)
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={handleDrop}
+          >
+            <div className="section-head">
+              <div>
+                <div className="panel-kicker">Ingest</div>
+                <h2>Загрузка медиа и архивов</h2>
               </div>
-            ))}
-          </div>
-        </article>
-      </section>
-
-      <section className="content-grid">
-        <article className="panel glass library-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="panel-kicker">Library</div>
-              <h2>Медиатека</h2>
+              <label className="primary-button file-button">
+                Выбрать файлы
+                <input type="file" multiple onChange={handlePick} />
+              </label>
             </div>
-            <span className="muted">{media.length} результатов</span>
-          </div>
-          <div className="media-grid">
-            {media.map((item) => (
-              <button key={item.id} className="media-card" type="button" onClick={() => setSelectedMedia(item)}>
-                <div className="media-preview">
-                  {item.thumbnail_url ? (
-                    <img src={mediaAssetUrl(item.thumbnail_url, token)} alt={item.original_filename} />
+
+            <p className="muted">
+              Поддерживаются изображения, GIF, видео и архивы с вложенными папками. Все новые файлы автоматически ставятся в очередь на AI-разбор.
+            </p>
+
+            <div className="dropwell">
+              <span>{dragActive ? 'Отпускайте файлы' : 'Drop zone / Upload deck'}</span>
+              <strong>Перетащите сюда архивы, видео, GIF или изображения любого размера</strong>
+              <small>Для тяжелых загрузок progress bar останется на экране до завершения передачи.</small>
+            </div>
+
+            <div className="progress-cluster">
+              <div className="progress-track">
+                <div className="progress-bar" style={{ width: `${uploadProgress}%` }} />
+              </div>
+              <div className="progress-meta">
+                <span>{uploading ? 'Идет загрузка' : 'Ожидание'}</span>
+                <strong>{uploading ? `${uploadProgress}%` : 'Ready'}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="glass-panel pulse-panel">
+            <div className="section-head">
+              <div>
+                <div className="panel-kicker">Pulse</div>
+                <h2>Что сейчас в приоритете</h2>
+              </div>
+            </div>
+
+            <div className="pulse-stack">
+              <article className="pulse-card">
+                <span>Очередь обработки</span>
+                <strong>{backlogCount} файлов ждут или обрабатываются</strong>
+                <small>
+                  queued: {queueCounts.queued} · processing: {queueCounts.processing} · failed: {queueCounts.failed}
+                </small>
+              </article>
+              <article className="pulse-card">
+                <span>Частые теги</span>
+                <strong>{trendingTags.length ? trendingTags[0].name.replaceAll('_', ' ') : 'Пока пусто'}</strong>
+                <small>{trendingTags.length ? `${trendingTags[0].count} совпадений в текущей выборке` : 'Появятся после AI-индексации'}</small>
+              </article>
+              <article className="pulse-card">
+                <span>Локальная устойчивость</span>
+                <strong>{backups.length} backup snapshots</strong>
+                <small>{backups[0] ? `Последний запуск: ${formatDate(backups[0].created_at)}` : 'Бэкапы еще не запускались'}</small>
+              </article>
+            </div>
+          </section>
+        </aside>
+
+        <section className="center-stage">
+          <section className="glass-panel command-hero">
+            <div className="command-copy">
+              <div className="eyebrow">Command Deck</div>
+              <h2>Ищите “ту самую пикчу” по памяти, тегам, safety и очереди, а не по удаче.</h2>
+              <p className="lede">
+                Центр экрана сфокусирован на библиотеке: поиск, фильтрация, карточки медиа и быстрый контекст по тому, насколько коллекция уже разобрана AI.
+              </p>
+              <div className="hero-ribbon">
+                <div className="hero-chip">
+                  <span>Изображения</span>
+                  <strong>{kindCounts.image}</strong>
+                </div>
+                <div className="hero-chip">
+                  <span>GIF</span>
+                  <strong>{kindCounts.gif}</strong>
+                </div>
+                <div className="hero-chip">
+                  <span>Видео</span>
+                  <strong>{kindCounts.video}</strong>
+                </div>
+                <div className="hero-chip">
+                  <span>Пользователи</span>
+                  <strong>{overview.counts.users}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="mission-grid">
+              <article className="mission-card">
+                <span>AI coverage</span>
+                <strong>{aiCoverage}%</strong>
+                <p>Доля текущих результатов, которые уже полностью описаны и протегированы.</p>
+              </article>
+              <article className="mission-card">
+                <span>Need attention</span>
+                <strong>{queueCounts.failed}</strong>
+                <p>Файлы с failed-статусом можно быстро отправить на повторную индексацию из блока справа.</p>
+              </article>
+              <article className="mission-card">
+                <span>Drive usage</span>
+                <strong>{storage ? `${driveUsagePercent}%` : 'n/a'}</strong>
+                <p>{storage ? `${formatBytes(storage.drive_used)} занято на диске` : 'Подробности по диску доступны администраторам.'}</p>
+              </article>
+            </div>
+          </section>
+
+          <section id="library" className="glass-panel filter-deck">
+            <div className="section-head">
+              <div>
+                <div className="panel-kicker">Search Atlas</div>
+                <h2>Поиск по памяти, тегам и AI-описанию</h2>
+              </div>
+            </div>
+
+            <div className="search-grid">
+              <label className="search-field">
+                Запрос
+                <input
+                  value={searchInput}
+                  onChange={(event) => {
+                    startTransition(() => setSearchInput(event.target.value))
+                  }}
+                  placeholder="кошкодевочка в фиолетовой комнате, meme gif, vertical edit, white hair..."
+                />
+              </label>
+
+              <label>
+                Тип
+                <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
+                  <option value="">Все</option>
+                  <option value="image">Изображение</option>
+                  <option value="gif">GIF</option>
+                  <option value="video">Видео</option>
+                </select>
+              </label>
+
+              <label>
+                Safety
+                <select value={ratingFilter} onChange={(event) => setRatingFilter(event.target.value)}>
+                  <option value="">Все</option>
+                  <option value="sfw">SFW</option>
+                  <option value="questionable">Questionable</option>
+                  <option value="nsfw">NSFW</option>
+                </select>
+              </label>
+
+              <label>
+                Статус
+                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                  <option value="">Все</option>
+                  <option value="pending">Pending</option>
+                  <option value="processing">Processing</option>
+                  <option value="complete">Complete</option>
+                  <option value="failed">Failed</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="tag-stream">
+              {trendingTags.length ? (
+                trendingTags.map((tag) => (
+                  <button
+                    key={`${tag.kind}-${tag.name}`}
+                    className={`tag-chip tag-${tag.kind}`}
+                    type="button"
+                    onClick={() => {
+                      startTransition(() => setSearchInput(tag.name.replaceAll('_', ' ')))
+                    }}
+                  >
+                    <span>{tag.name.replaceAll('_', ' ')}</span>
+                    <strong>{tag.count}</strong>
+                  </button>
+                ))
+              ) : (
+                <div className="muted">Частые теги появятся здесь после первых индексаций.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="library-toolbar">
+            <div>
+              <div className="eyebrow">Library Feed</div>
+              <h2>{media.length} результатов</h2>
+              <p className="muted">{resultDescription}</p>
+            </div>
+            <div className="toolbar-chips">
+              <span className="toolbar-chip">queued {queueCounts.queued}</span>
+              <span className="toolbar-chip">processing {queueCounts.processing}</span>
+              <span className="toolbar-chip">complete {queueCounts.complete}</span>
+              <span className="toolbar-chip">failed {queueCounts.failed}</span>
+            </div>
+          </section>
+
+          <section className="atlas-grid">
+            {media.length ? (
+              media.map((item) => {
+                const active = spotlight?.id === item.id
+                return (
+                  <article key={item.id} className={`atlas-card ${active ? 'active' : ''}`}>
+                    <button
+                      className="atlas-hitbox"
+                      type="button"
+                      onClick={() => {
+                        setSelectedMedia(item)
+                      }}
+                    >
+                      <span className="sr-only">Select media</span>
+                    </button>
+
+                    <div className="atlas-preview">
+                      {item.thumbnail_url ? (
+                        <img src={mediaAssetUrl(item.thumbnail_url, token)} alt={item.original_filename} />
+                      ) : (
+                        <div className="empty-preview">{kindLabel(item.kind)}</div>
+                      )}
+                      <div className="preview-overlay">
+                        <span className="preview-kind">{kindLabel(item.kind)}</span>
+                        <span className={`badge badge-${item.safety_rating}`}>{ratingLabel(item.safety_rating)}</span>
+                      </div>
+                    </div>
+
+                    <div className="atlas-body">
+                      <div className="atlas-topline">
+                        <span className={`badge badge-status-${item.processing_status}`}>{item.processing_status}</span>
+                        <span className="micro-meta">{formatBytes(item.file_size)}</span>
+                      </div>
+
+                      <h3 title={item.original_filename}>{item.original_filename}</h3>
+                      <p>{trimText(item.description, 'AI-описание пока не готово. После индексации здесь появится подробный разбор сцены.')}</p>
+
+                      <div className="info-strip">
+                        <span>{item.width && item.height ? `${item.width}×${item.height}` : kindLabel(item.kind)}</span>
+                        <span>{item.duration_seconds ? formatDuration(item.duration_seconds) : formatDate(item.normalized_timestamp)}</span>
+                      </div>
+
+                      <div className="tag-cloud">
+                        {(item.tags ?? []).slice(0, 7).map((tag) => (
+                          <span key={`${item.id}-${tag.kind}-${tag.name}`} className={`tag-chip static-chip tag-${tag.kind}`}>
+                            {tag.name.replaceAll('_', ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </article>
+                )
+              })
+            ) : (
+              <article className="empty-state glass-panel">
+                <div className="panel-kicker">No Results</div>
+                <h2>Под текущие фильтры ничего не нашлось.</h2>
+                <p className="muted">
+                  Снимите часть фильтров или загрузите новые файлы. Если вы только что загрузили архив, дайте очереди немного времени на разбор и индексацию.
+                </p>
+              </article>
+            )}
+          </section>
+        </section>
+
+        <aside className="right-rail">
+          <section className="glass-panel spotlight-panel">
+            <div className="section-head">
+              <div>
+                <div className="panel-kicker">Spotlight</div>
+                <h2>{spotlight ? 'Текущий фокус' : 'Выберите карточку'}</h2>
+              </div>
+              {spotlight ? (
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => setViewerOpen(true)}>
+                    Открыть
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => void handleReindex(spotlight.id)}>
+                    Reindex
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {spotlight ? (
+              <div className="spotlight-body">
+                <div className="spotlight-preview">
+                  {spotlight.kind === 'video' ? (
+                    <video controls src={mediaAssetUrl(spotlight.file_url, token)} />
                   ) : (
-                    <div className="empty-preview">{item.kind}</div>
+                    <img src={mediaAssetUrl(spotlight.file_url, token)} alt={spotlight.original_filename} />
                   )}
                 </div>
-                <div className="media-meta">
-                  <div className="media-topline">
-                    <span className={`badge badge-${item.safety_rating}`}>{item.safety_rating}</span>
-                    <span className={`badge badge-status-${item.processing_status}`}>{item.processing_status}</span>
+
+                <div className="spotlight-copy">
+                  <div className="spotlight-badges">
+                    <span className={`badge badge-${spotlight.safety_rating}`}>{ratingLabel(spotlight.safety_rating)}</span>
+                    <span className={`badge badge-status-${spotlight.processing_status}`}>{spotlight.processing_status}</span>
                   </div>
-                  <strong title={item.original_filename}>{item.original_filename}</strong>
-                  <small>
-                    {item.width && item.height ? `${item.width}×${item.height}` : item.kind} · {formatBytes(item.file_size)}
-                  </small>
-                  <p>{item.description || 'Файл еще не описан AI или описание пока пустое.'}</p>
-                  <div className="tag-row">
-                    {(item.tags ?? []).slice(0, 8).map((tag) => (
-                      <span key={`${item.id}-${tag.kind}-${tag.name}`} className={`tag-chip tag-${tag.kind}`}>
-                        {tag.name}
+                  <h3>{spotlight.original_filename}</h3>
+                  <p>{trimText(spotlight.description, 'AI-описание пока отсутствует.', 240)}</p>
+
+                  <div className="detail-grid">
+                    <div>
+                      <span>Размер</span>
+                      <strong>{formatBytes(spotlight.file_size)}</strong>
+                    </div>
+                    <div>
+                      <span>Тип</span>
+                      <strong>{kindLabel(spotlight.kind)}</strong>
+                    </div>
+                    <div>
+                      <span>Blur</span>
+                      <strong>{spotlight.blur_score?.toFixed(1) ?? 'n/a'}</strong>
+                    </div>
+                    <div>
+                      <span>Время</span>
+                      <strong>{formatDate(spotlight.normalized_timestamp)}</strong>
+                    </div>
+                  </div>
+
+                  {spotlight.technical_notes ? <div className="note-block">{spotlight.technical_notes}</div> : null}
+
+                  <div className="tag-cloud">
+                    {(spotlight.tags ?? []).map((tag) => (
+                      <span key={`${spotlight.id}-${tag.kind}-${tag.name}`} className={`tag-chip static-chip tag-${tag.kind}`}>
+                        {tag.name.replaceAll('_', ' ')}
                       </span>
                     ))}
                   </div>
                 </div>
-              </button>
-            ))}
-          </div>
-        </article>
+              </div>
+            ) : (
+              <div className="muted">Откройте библиотеку в центре и выберите файл, чтобы увидеть расширенный просмотр.</div>
+            )}
+          </section>
 
-        <aside className="side-stack">
-          <article className="panel glass">
-            <div className="panel-heading">
+          <section id="queue" className="glass-panel queue-panel">
+            <div className="section-head">
               <div>
                 <div className="panel-kicker">Queue</div>
-                <h2>Jobs</h2>
+                <h2>Состояние jobs</h2>
               </div>
             </div>
+
+            <div className="queue-grid">
+              <article className="queue-stat">
+                <span>Queued</span>
+                <strong>{queueCounts.queued}</strong>
+              </article>
+              <article className="queue-stat">
+                <span>Processing</span>
+                <strong>{queueCounts.processing}</strong>
+              </article>
+              <article className="queue-stat">
+                <span>Complete</span>
+                <strong>{queueCounts.complete}</strong>
+              </article>
+              <article className="queue-stat danger">
+                <span>Failed</span>
+                <strong>{queueCounts.failed}</strong>
+              </article>
+            </div>
+
             <div className="compact-list">
-              {jobs.slice(0, 8).map((job) => (
-                <div key={job.id} className="compact-row">
+              {(highPriorityJobs.length ? highPriorityJobs : jobs.slice(0, 6)).map((job) => (
+                <div key={job.id} className="compact-row queue-row">
                   <div>
                     <strong>{job.media_id.slice(0, 8)}</strong>
                     <small>{formatDate(job.created_at)}</small>
+                    {job.error_message ? <small className="error-text">{trimText(job.error_message, '', 120)}</small> : null}
                   </div>
                   <span className={`badge badge-status-${job.status}`}>{job.status}</span>
                 </div>
               ))}
             </div>
-          </article>
+          </section>
 
-          <article className="panel glass">
-            <div className="panel-heading">
+          <section id="backups" className="glass-panel backup-panel">
+            <div className="section-head">
               <div>
                 <div className="panel-kicker">Backups</div>
                 <h2>Telegram backup pipeline</h2>
@@ -475,10 +893,11 @@ function App() {
                   Metadata
                 </button>
                 <button className="primary-button" type="button" onClick={() => void handleCreateBackup('full')}>
-                  Full
+                  Full backup
                 </button>
               </div>
             </div>
+
             <div className="compact-list">
               {backups.slice(0, 6).map((backup) => (
                 <div key={backup.id} className="compact-row compact-row-column">
@@ -486,134 +905,212 @@ function App() {
                     <strong>{backup.scope}</strong>
                     <span className={`badge badge-status-${backup.status}`}>{backup.status}</span>
                   </div>
-                  <small>{backup.parts.length} parts · {formatDate(backup.created_at)}</small>
+                  <small>{backup.parts.length} частей · {formatDate(backup.created_at)}</small>
                   {backup.error_message ? <small className="error-text">{backup.error_message}</small> : null}
                 </div>
               ))}
             </div>
-          </article>
+          </section>
 
-          <article className="panel glass">
-            <div className="panel-heading">
+          <section className="glass-panel signal-panel">
+            <div className="section-head">
               <div>
-                <div className="panel-kicker">Prompt</div>
-                <h2>AI-инструкция</h2>
+                <div className="panel-kicker">Signals</div>
+                <h2>Логи и AI-подсказка</h2>
               </div>
             </div>
+
+            <div className="signal-log-list">
+              {overview.recent_logs.slice(0, 5).map((log) => (
+                <article key={log.id} className={`log-card severity-${log.severity}`}>
+                  <span>{log.event_type}</span>
+                  <strong>{trimText(log.message, '', 110)}</strong>
+                  <small>{formatDate(log.created_at)}</small>
+                </article>
+              ))}
+            </div>
+
             <pre className="prompt-preview">{overview.prompt_preview}</pre>
-          </article>
+          </section>
         </aside>
-      </section>
+      </div>
 
       {currentUser.role === 'admin' ? (
-        <section className="admin-grid">
-          <article className="panel glass">
-            <div className="panel-heading">
+        <section id="admin" className="admin-stage">
+          <article className="glass-panel storage-panel">
+            <div className="section-head">
               <div>
                 <div className="panel-kicker">Storage</div>
-                <h2>Занятое место как в Steam</h2>
+                <h2>Диск как у Steam, но для медиатеки</h2>
               </div>
             </div>
+
             {storage ? (
-              <div className="storage-stack">
-                {Object.entries(storage.project).map(([name, value]) => (
-                  <div key={name} className="storage-row">
-                    <div className="row-between">
-                      <span>{name}</span>
-                      <strong>{formatBytes(value)}</strong>
+              <>
+                <div className="storage-hero">
+                  <div className="storage-ring">
+                    <strong>{driveUsagePercent}%</strong>
+                    <span>использовано</span>
+                  </div>
+                  <div className="storage-facts">
+                    <div>
+                      <span>Всего на диске</span>
+                      <strong>{formatBytes(storage.drive_total)}</strong>
                     </div>
-                    <div className="mini-track">
-                      <div className="mini-bar" style={{ width: `${Math.max((value / Math.max(storage.project.total || 1, 1)) * 100, 2)}%` }} />
+                    <div>
+                      <span>Свободно</span>
+                      <strong>{formatBytes(storage.drive_free)}</strong>
+                    </div>
+                    <div>
+                      <span>Проект</span>
+                      <strong>{formatBytes(projectUsageTotal)}</strong>
+                    </div>
+                    <div>
+                      <span>Прочее на диске</span>
+                      <strong>{formatBytes(storage.other_on_drive)}</strong>
                     </div>
                   </div>
-                ))}
-                <div className="storage-split">
-                  {storage.per_user.map((entry) => (
-                    <div key={`${entry.username}-${entry.kind}`} className="user-usage">
-                      <span>{entry.username}</span>
-                      <strong>{entry.kind}</strong>
-                      <small>{formatBytes(entry.bytes)}</small>
+                </div>
+
+                <div className="storage-breakdown">
+                  {projectBreakdown.map(([name, value]) => (
+                    <div key={name} className="storage-row">
+                      <div className="row-between">
+                        <span>{name}</span>
+                        <strong>{formatBytes(value)}</strong>
+                      </div>
+                      <div className="mini-track">
+                        <div className="mini-bar" style={{ width: `${Math.max((value / Math.max(projectUsageTotal || 1, 1)) * 100, 2)}%` }} />
+                      </div>
                     </div>
                   ))}
                 </div>
-              </div>
+
+                <div className="user-storage-grid">
+                  {storage.per_user.map((entry) => (
+                    <article key={`${entry.username}-${entry.kind}`} className="user-usage">
+                      <span>{entry.username}</span>
+                      <strong>{entry.kind}</strong>
+                      <small>{formatBytes(entry.bytes)}</small>
+                    </article>
+                  ))}
+                </div>
+              </>
             ) : (
               <p className="muted">Storage analytics unavailable.</p>
             )}
           </article>
 
-          <article className="panel glass">
-            <div className="panel-heading">
+          <article className="glass-panel users-panel">
+            <div className="section-head">
               <div>
-                <div className="panel-kicker">Admin</div>
+                <div className="panel-kicker">Access</div>
                 <h2>Пользователи и роли</h2>
               </div>
             </div>
+
             <form className="admin-form" onSubmit={handleCreateUser}>
-              <input placeholder="username" value={newUserForm.username} onChange={(event) => setNewUserForm({ ...newUserForm, username: event.target.value })} required />
-              <input placeholder="password" type="password" value={newUserForm.password} onChange={(event) => setNewUserForm({ ...newUserForm, password: event.target.value })} required />
-              <input placeholder="@telegram" value={newUserForm.telegram} onChange={(event) => setNewUserForm({ ...newUserForm, telegram: event.target.value })} />
-              <select value={newUserForm.role} onChange={(event) => setNewUserForm({ ...newUserForm, role: event.target.value as 'admin' | 'member' })}>
-                <option value="member">member</option>
-                <option value="admin">admin</option>
-              </select>
+              <label>
+                username
+                <input value={newUserForm.username} onChange={(event) => setNewUserForm({ ...newUserForm, username: event.target.value })} required />
+              </label>
+              <label>
+                password
+                <input type="password" value={newUserForm.password} onChange={(event) => setNewUserForm({ ...newUserForm, password: event.target.value })} required />
+              </label>
+              <label>
+                telegram
+                <input value={newUserForm.telegram} onChange={(event) => setNewUserForm({ ...newUserForm, telegram: event.target.value })} placeholder="@username" />
+              </label>
+              <label>
+                role
+                <select value={newUserForm.role} onChange={(event) => setNewUserForm({ ...newUserForm, role: event.target.value as 'admin' | 'member' })}>
+                  <option value="member">member</option>
+                  <option value="admin">admin</option>
+                </select>
+              </label>
               <button className="primary-button" type="submit">
                 Добавить пользователя
               </button>
             </form>
-            <div className="compact-list users-list">
+
+            <div className="user-list">
               {users.map((user) => (
-                <div key={user.id} className="compact-row">
+                <article key={user.id} className="user-card">
                   <div>
                     <strong>{user.username}</strong>
-                    <small>{user.telegram_username ? `@${user.telegram_username}` : 'No Telegram link'}</small>
+                    <small>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram не подключен'}</small>
                   </div>
-                  <span className={`badge badge-role-${user.role}`}>{user.role}</span>
-                </div>
+                  <div className="user-card-meta">
+                    <span className={`badge badge-role-${user.role}`}>{user.role}</span>
+                    <small>{formatDate(user.created_at)}</small>
+                  </div>
+                </article>
               ))}
             </div>
           </article>
         </section>
       ) : null}
 
-      {selectedMedia ? (
-        <div className="modal-backdrop" onClick={() => setSelectedMedia(null)}>
-          <div className="modal glass" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-heading">
+      {viewerOpen && spotlight ? (
+        <div className="modal-backdrop" onClick={() => setViewerOpen(false)}>
+          <div className="modal glass-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
               <div>
-                <div className="panel-kicker">{selectedMedia.kind}</div>
-                <h2>{selectedMedia.original_filename}</h2>
+                <div className="panel-kicker">{kindLabel(spotlight.kind)}</div>
+                <h2>{spotlight.original_filename}</h2>
               </div>
               <div className="button-row">
-                <button className="secondary-button" type="button" onClick={() => void handleReindex(selectedMedia.id)}>
+                <button className="secondary-button" type="button" onClick={() => void handleReindex(spotlight.id)}>
                   Reindex
                 </button>
-                <button className="ghost-button" type="button" onClick={() => setSelectedMedia(null)}>
+                <button className="ghost-button" type="button" onClick={() => setViewerOpen(false)}>
                   Close
                 </button>
               </div>
             </div>
+
             <div className="modal-grid">
               <div className="modal-preview">
-                {selectedMedia.kind === 'video' ? (
-                  <video controls src={mediaAssetUrl(selectedMedia.file_url, token)} />
+                {spotlight.kind === 'video' ? (
+                  <video controls src={mediaAssetUrl(spotlight.file_url, token)} />
                 ) : (
-                  <img src={mediaAssetUrl(selectedMedia.file_url, token)} alt={selectedMedia.original_filename} />
+                  <img src={mediaAssetUrl(spotlight.file_url, token)} alt={spotlight.original_filename} />
                 )}
               </div>
+
               <div className="modal-copy">
-                <span className={`badge badge-${selectedMedia.safety_rating}`}>{selectedMedia.safety_rating}</span>
-                <p>{selectedMedia.description || 'No AI description yet.'}</p>
-                <div className="meta-table">
-                  <div><span>Размер</span><strong>{formatBytes(selectedMedia.file_size)}</strong></div>
-                  <div><span>Timestamp</span><strong>{formatDate(selectedMedia.normalized_timestamp)}</strong></div>
-                  <div><span>Blur</span><strong>{selectedMedia.blur_score?.toFixed(1) ?? 'n/a'}</strong></div>
-                  <div><span>Статус</span><strong>{selectedMedia.processing_status}</strong></div>
+                <div className="spotlight-badges">
+                  <span className={`badge badge-${spotlight.safety_rating}`}>{ratingLabel(spotlight.safety_rating)}</span>
+                  <span className={`badge badge-status-${spotlight.processing_status}`}>{spotlight.processing_status}</span>
                 </div>
-                <div className="tag-row modal-tags">
-                  {(selectedMedia.tags ?? []).map((tag) => (
-                    <span key={`${selectedMedia.id}-${tag.kind}-${tag.name}`} className={`tag-chip tag-${tag.kind}`}>
-                      {tag.name}
+                <p>{trimText(spotlight.description, 'AI-описание пока отсутствует.', 500)}</p>
+
+                <div className="detail-grid">
+                  <div>
+                    <span>Размер</span>
+                    <strong>{formatBytes(spotlight.file_size)}</strong>
+                  </div>
+                  <div>
+                    <span>Разрешение</span>
+                    <strong>{spotlight.width && spotlight.height ? `${spotlight.width}×${spotlight.height}` : 'n/a'}</strong>
+                  </div>
+                  <div>
+                    <span>Длительность</span>
+                    <strong>{formatDuration(spotlight.duration_seconds)}</strong>
+                  </div>
+                  <div>
+                    <span>Timestamp</span>
+                    <strong>{formatDate(spotlight.normalized_timestamp)}</strong>
+                  </div>
+                </div>
+
+                {spotlight.technical_notes ? <div className="note-block">{spotlight.technical_notes}</div> : null}
+
+                <div className="tag-cloud">
+                  {(spotlight.tags ?? []).map((tag) => (
+                    <span key={`${spotlight.id}-modal-${tag.kind}-${tag.name}`} className={`tag-chip static-chip tag-${tag.kind}`}>
+                      {tag.name.replaceAll('_', ' ')}
                     </span>
                   ))}
                 </div>
@@ -627,4 +1124,3 @@ function App() {
 }
 
 export default App
-

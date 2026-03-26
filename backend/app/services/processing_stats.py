@@ -9,6 +9,7 @@ from sqlalchemy.orm import Query, Session
 
 from app.config import settings
 from app.models import AuditLog, JobStatus, ProcessingJob
+from app.utils.datetimes import seconds_between
 
 
 def _round_number(value: float | None, digits: int = 2) -> float | None:
@@ -28,9 +29,10 @@ def _percentile(values: list[float], ratio: float) -> float | None:
 
 
 def _completed_job_seconds(job: ProcessingJob) -> float | None:
-    if not job.started_at or not job.completed_at:
+    duration = seconds_between(job.completed_at, job.started_at)
+    if duration is None:
         return None
-    return max((job.completed_at - job.started_at).total_seconds(), 0.0)
+    return max(duration, 0.0)
 
 
 def build_processing_stats(
@@ -130,7 +132,7 @@ def build_processing_stats(
         "avg_prompt_tokens": _round_number(mean(prompt_tokens), 1) if prompt_tokens else None,
         "avg_completion_tokens": _round_number(mean(completion_tokens), 1) if completion_tokens else None,
         "avg_reasoning_tokens": _round_number(mean(reasoning_tokens), 1) if reasoning_tokens else None,
-        "oldest_queued_seconds": _round_number((now - oldest_queued_job.created_at).total_seconds(), 1) if oldest_queued_job and oldest_queued_job.created_at else None,
+        "oldest_queued_seconds": _round_number(seconds_between(now, oldest_queued_job.created_at), 1) if oldest_queued_job and oldest_queued_job.created_at else None,
     }
 
 

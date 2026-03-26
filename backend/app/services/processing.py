@@ -10,6 +10,7 @@ from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, Processing
 from app.services.ai_proxy import ai_proxy_service
 from app.services.audit import audit
 from app.services.storage import queue_media_for_processing
+from app.utils.datetimes import seconds_between
 
 
 class ProcessingCoordinator:
@@ -69,11 +70,8 @@ class ProcessingCoordinator:
             job.status = JobStatus.complete
             job.error_message = None
             job.completed_at = datetime.now(timezone.utc)
-            total_seconds = (
-                max((job.completed_at - job.started_at).total_seconds(), 0.0)
-                if job.started_at and job.completed_at
-                else None
-            )
+            total_seconds_raw = seconds_between(job.completed_at, job.started_at)
+            total_seconds = max(total_seconds_raw, 0.0) if total_seconds_raw is not None else None
             job.payload = {
                 "metrics": {
                     **(analysis.get("x_metrics") or {}),
@@ -101,11 +99,8 @@ class ProcessingCoordinator:
                 job.status = JobStatus.failed
                 job.error_message = str(exc)
                 job.completed_at = datetime.now(timezone.utc)
-                total_seconds = (
-                    max((job.completed_at - job.started_at).total_seconds(), 0.0)
-                    if job.started_at and job.completed_at
-                    else None
-                )
+                total_seconds_raw = seconds_between(job.completed_at, job.started_at)
+                total_seconds = max(total_seconds_raw, 0.0) if total_seconds_raw is not None else None
                 existing_payload = job.payload or {}
                 existing_payload["metrics"] = {
                     **(existing_payload.get("metrics") or {}),

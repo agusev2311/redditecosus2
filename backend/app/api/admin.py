@@ -88,9 +88,12 @@ def get_runtime_config():
 def patch_runtime_config():
     payload = request.get_json(force=True) or {}
     updates = payload.get("updates") or {}
+    coordinator = get_processing_coordinator()
     values = update_runtime_config_values(updates, updated_by_id=g.current_user.id)
     if "processing_workers" in updates:
-        get_processing_coordinator().set_desired_workers(int(values["processing_workers"]))
+        coordinator.set_desired_workers(int(values["processing_workers"]))
+    if "ai_proxy_max_concurrency" in updates:
+        coordinator.notify_capacity_changed()
     audit(
         "admin.runtime_config_updated",
         f"Updated runtime config keys: {', '.join(sorted(updates.keys()))}",

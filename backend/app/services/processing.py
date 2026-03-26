@@ -18,6 +18,8 @@ class ProcessingCoordinator:
         self._queue: queue.Queue[str] = queue.Queue()
         self._workers: dict[int, threading.Thread] = {}
         self._worker_stops: dict[int, threading.Event] = {}
+        self._processing_slots = threading.Condition()
+        self._active_processing = 0
         self._worker_counter = 0
         self._desired_workers = 0
         self._lock = threading.Lock()
@@ -49,6 +51,10 @@ class ProcessingCoordinator:
             self._workers = {worker_id: thread for worker_id, thread in self._workers.items() if thread.is_alive()}
             self._worker_stops = {worker_id: stop for worker_id, stop in self._worker_stops.items() if worker_id in self._workers}
             return len(self._workers)
+
+    def notify_capacity_changed(self) -> None:
+        with self._processing_slots:
+            self._processing_slots.notify_all()
 
     def set_desired_workers(self, count: int) -> int:
         target = max(1, int(count))
@@ -123,11 +129,31 @@ class ProcessingCoordinator:
             except queue.Empty:
                 continue
             try:
-                self._process(job_id)
+                self._process(job_id, stop_event)
             finally:
                 self._queue.task_done()
 
-    def _process(self, job_id: str) -> None:
+    def _acquire_processing_slot(self, stop_event: threading.Event) -> bool:
+        while True:
+            if stop_event.is_set():
+                return False
+            limit = max(1, int(get_runtime_value("ai_proxy_max_concurrency")))
+            with self._processing_slots:
+                if self._active_processing < limit:
+                    self._active_processing += 1
+                    return True
+                self._processing_slots.wait(timeout=0.5)
+
+    def _release_processing_slot(self) -> None:
+        with self._processing_slots:
+            self._active_processing = max(0, self._active_processing - 1)
+            self._processing_slots.notify_all()
+
+    def _process(self, job_id: str, stop_event: threading.Event) -> None:
+        if not self._acquire_processing_slot(stop_event):
+            self.enqueue(job_id)
+            return
+
         session = SessionLocal()
         try:
             job = session.get(ProcessingJob, job_id)
@@ -193,6 +219,7 @@ class ProcessingCoordinator:
             audit("media.index_failed", f"Index failed: {exc}", severity="error", context={"job_id": job_id})
         finally:
             session.close()
+            self._release_processing_slot()
 
     def _apply_analysis(self, session, media: MediaItem, analysis: dict) -> None:
         session.query(MediaTag).filter(MediaTag.media_id == media.id).delete()

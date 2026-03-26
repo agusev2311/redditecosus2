@@ -73,6 +73,7 @@ class Settings:
     ai_proxy_api_key: str = os.getenv("AI_PROXY_API_KEY", "")
     ai_proxy_model: str = os.getenv("AI_PROXY_MODEL", "gpt-5.4")
     ai_proxy_reasoning_effort: str = os.getenv("AI_PROXY_REASONING_EFFORT", "xhigh")
+    ai_proxy_max_concurrency: int = int(os.getenv("AI_PROXY_MAX_CONCURRENCY", "2"))
     ai_proxy_timeout_seconds: int = int(os.getenv("AI_PROXY_TIMEOUT_SECONDS", "300"))
     ai_proxy_verify_tls: bool = _bool("AI_PROXY_VERIFY_TLS", True)
     ai_proxy_ca_bundle: str = os.getenv("AI_PROXY_CA_BUNDLE", "")

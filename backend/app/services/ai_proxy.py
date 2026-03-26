@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from time import perf_counter
 from typing import Any
 
@@ -104,6 +106,26 @@ ANALYSIS_SCHEMA = {
 
 
 class AIProxyService:
+    def __init__(self) -> None:
+        self._concurrency_condition = threading.Condition()
+        self._active_requests = 0
+
+    @contextmanager
+    def _acquire_request_slot(self, limit: int):
+        safe_limit = max(1, int(limit))
+        started_wait = perf_counter()
+        with self._concurrency_condition:
+            while self._active_requests >= safe_limit:
+                self._concurrency_condition.wait(timeout=0.5)
+            self._active_requests += 1
+        wait_seconds = round(perf_counter() - started_wait, 3)
+        try:
+            yield wait_seconds
+        finally:
+            with self._concurrency_condition:
+                self._active_requests = max(0, self._active_requests - 1)
+                self._concurrency_condition.notify_all()
+
     def _existing_tags_for_owner(self, owner_id: int, limit: int) -> dict[str, list[str]]:
         session = SessionLocal()
         try:
@@ -190,16 +212,17 @@ class AIProxyService:
         if runtime_config["ai_proxy_ca_bundle"]:
             verify = str(runtime_config["ai_proxy_ca_bundle"])
 
-        started = perf_counter()
-        with httpx.Client(timeout=int(runtime_config["ai_proxy_timeout_seconds"]), verify=verify) as client:
-            response = client.post(
-                f"{_normalize_ai_proxy_base_url(str(runtime_config['ai_proxy_base_url'])).rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.ai_proxy_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
+        with self._acquire_request_slot(int(runtime_config["ai_proxy_max_concurrency"])) as slot_wait_seconds:
+            started = perf_counter()
+            with httpx.Client(timeout=int(runtime_config["ai_proxy_timeout_seconds"]), verify=verify) as client:
+                response = client.post(
+                    f"{_normalize_ai_proxy_base_url(str(runtime_config['ai_proxy_base_url'])).rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.ai_proxy_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
         elapsed = round(perf_counter() - started, 3)
         response.raise_for_status()
         body = response.json()
@@ -219,6 +242,8 @@ class AIProxyService:
             "model": body.get("model") or runtime_config["ai_proxy_model"],
             "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
             "ai_seconds": elapsed,
+            "slot_wait_seconds": slot_wait_seconds,
+            "ai_max_concurrency": int(runtime_config["ai_proxy_max_concurrency"]),
             "frame_count": len(frames),
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),

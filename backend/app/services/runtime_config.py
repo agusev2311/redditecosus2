@@ -56,6 +56,15 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
         default=settings.ai_proxy_reasoning_effort,
         choices=("low", "medium", "high", "xhigh"),
     ),
+    "ai_proxy_max_concurrency": RuntimeConfigSpec(
+        key="ai_proxy_max_concurrency",
+        label="AI max concurrency",
+        description="Максимум одновременных запросов к AI proxy, независимо от числа workers.",
+        kind="integer",
+        default=settings.ai_proxy_max_concurrency,
+        min_value=1,
+        max_value=8,
+    ),
     "ai_proxy_timeout_seconds": RuntimeConfigSpec(
         key="ai_proxy_timeout_seconds",
         label="AI timeout",

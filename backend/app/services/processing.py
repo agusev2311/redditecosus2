@@ -27,8 +27,15 @@ class ProcessingCoordinator:
         if self._booted:
             return
         self._booted = True
+        recovered_jobs = self._recover_inflight_jobs()
         self._enqueue_existing_jobs()
         self.set_desired_workers(int(get_runtime_value("processing_workers")))
+        if recovered_jobs:
+            audit(
+                "processing.recovered_inflight",
+                f"Recovered {recovered_jobs} in-flight jobs after startup",
+                context={"recovered_jobs": recovered_jobs},
+            )
 
     def enqueue(self, job_id: str) -> None:
         self._queue.put(job_id)
@@ -74,6 +81,33 @@ class ProcessingCoordinator:
             jobs = session.query(ProcessingJob).filter(ProcessingJob.status == JobStatus.queued).all()
             for job in jobs:
                 self.enqueue(job.id)
+        finally:
+            session.close()
+
+    def _recover_inflight_jobs(self) -> int:
+        session = SessionLocal()
+        try:
+            jobs = session.query(ProcessingJob).filter(ProcessingJob.status == JobStatus.processing).all()
+            if not jobs:
+                return 0
+
+            media_ids = [job.media_id for job in jobs]
+            for job in jobs:
+                job.status = JobStatus.queued
+                job.started_at = None
+                job.completed_at = None
+                job.error_message = None
+
+            (
+                session.query(MediaItem)
+                .filter(
+                    MediaItem.id.in_(media_ids),
+                    MediaItem.processing_status == ProcessingStatus.processing,
+                )
+                .update({MediaItem.processing_status: ProcessingStatus.pending}, synchronize_session=False)
+            )
+            session.commit()
+            return len(jobs)
         finally:
             session.close()
 

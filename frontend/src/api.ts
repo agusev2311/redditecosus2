@@ -1,4 +1,4 @@
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, UploadResponse, User } from './types'
+import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -152,6 +152,17 @@ export function reindexAllMedia(token: string) {
     '/api/admin/reindex-all',
     {
       method: 'POST',
+    },
+    token,
+  )
+}
+
+export function resetLibrary(token: string, confirmation: string) {
+  return request<DangerResetResponse>(
+    '/api/admin/danger/reset-library',
+    {
+      method: 'POST',
+      body: JSON.stringify({ confirmation }),
     },
     token,
   )

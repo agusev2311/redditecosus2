@@ -34,6 +34,13 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
         min_value=1,
         max_value=24,
     ),
+    "processing_paused": RuntimeConfigSpec(
+        key="processing_paused",
+        label="Processing paused",
+        description="Останавливает запуск новых задач обработки, не прерывая уже активные.",
+        kind="boolean",
+        default=settings.processing_paused,
+    ),
     "ai_proxy_base_url": RuntimeConfigSpec(
         key="ai_proxy_base_url",
         label="AI proxy URL",

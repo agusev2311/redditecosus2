@@ -63,6 +63,9 @@ class ProcessingCoordinator:
         with self._processing_slots:
             self._processing_slots.notify_all()
 
+    def _processing_paused(self) -> bool:
+        return bool(get_runtime_value("processing_paused"))
+
     def set_desired_workers(self, count: int) -> int:
         target = max(1, int(count))
         with self._lock:
@@ -92,6 +95,8 @@ class ProcessingCoordinator:
         self._sync_queued_jobs(limit=500)
 
     def _sync_queued_jobs(self, limit: int = 64) -> int:
+        if self._processing_paused():
+            return 0
         if not self._sync_lock.acquire(blocking=False):
             return 0
         try:
@@ -153,6 +158,9 @@ class ProcessingCoordinator:
                     self._workers.pop(worker_id, None)
                     self._worker_stops.pop(worker_id, None)
                 return
+            if self._processing_paused():
+                stop_event.wait(0.5)
+                continue
             try:
                 job_id = self._queue.get(timeout=1.0)
             except queue.Empty:
@@ -169,6 +177,9 @@ class ProcessingCoordinator:
         while True:
             if stop_event.is_set():
                 return False
+            if self._processing_paused():
+                stop_event.wait(0.5)
+                continue
             limit = max(1, int(get_runtime_value("ai_proxy_max_concurrency")))
             with self._processing_slots:
                 if self._active_processing < limit:

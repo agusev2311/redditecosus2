@@ -6,6 +6,7 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, ProcessingJob, User, UserRole
 from app.services.audit import audit
+from app.services.danger_zone import DANGER_RESET_CONFIRMATION, full_library_reset
 from app.services.processing import get_processing_coordinator
 from app.services.runtime_config import list_runtime_config_items, update_runtime_config_values
 from app.services.storage import queue_media_for_processing
@@ -93,7 +94,7 @@ def patch_runtime_config():
     values = update_runtime_config_values(updates, updated_by_id=g.current_user.id)
     if "processing_workers" in updates:
         coordinator.set_desired_workers(int(values["processing_workers"]))
-    if "ai_proxy_max_concurrency" in updates:
+    if "ai_proxy_max_concurrency" in updates or "processing_paused" in updates:
         coordinator.notify_capacity_changed()
     audit(
         "admin.runtime_config_updated",
@@ -158,3 +159,30 @@ def reindex_all_media():
             "skipped_active_media": skipped_active_media,
         }
     )
+
+
+@admin_bp.post("/admin/danger/reset-library")
+@admin_required
+def reset_library():
+    payload = request.get_json(force=True) or {}
+    confirmation = str(payload.get("confirmation") or "")
+    try:
+        result = full_library_reset(confirmation=confirmation, updated_by_id=g.current_user.id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "confirmation_phrase": DANGER_RESET_CONFIRMATION}), 400
+
+    audit(
+        "admin.danger_reset_requested",
+        result["message"],
+        actor_id=None if result["deleted"] else g.current_user.id,
+        severity="warning",
+        context={
+            "deleted": result["deleted"],
+            "paused": result["paused"],
+            "processing_jobs": result["processing_jobs"],
+            "queued_jobs": result["queued_jobs"],
+            "media_count": result["media_count"],
+            "user_count": result["user_count"],
+        },
+    )
+    return jsonify({**result, "confirmation_phrase": DANGER_RESET_CONFIRMATION})

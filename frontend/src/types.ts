@@ -160,3 +160,14 @@ export interface ReindexAllResponse {
   queued_jobs: number
   skipped_active_media: number
 }
+
+export interface DangerResetResponse {
+  deleted: boolean
+  paused: boolean
+  processing_jobs: number
+  queued_jobs: number
+  media_count: number
+  user_count: number
+  message: string
+  confirmation_phrase: string
+}

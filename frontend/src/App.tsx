@@ -17,6 +17,7 @@ import {
   me,
   reindexMedia,
   reindexAllMedia,
+  resetLibrary,
   retryFailedJobs,
   updateRuntimeConfig,
   uploadFiles,
@@ -266,6 +267,8 @@ function App() {
   const [retryingFailed, setRetryingFailed] = useState(false)
   const [savingRuntimeConfig, setSavingRuntimeConfig] = useState(false)
   const [reindexingAll, setReindexingAll] = useState(false)
+  const [dangerConfirmation, setDangerConfirmation] = useState('')
+  const [resettingLibrary, setResettingLibrary] = useState(false)
   const deferredSearch = useDeferredValue(searchInput)
 
   useEffect(() => {
@@ -474,6 +477,42 @@ function App() {
     }
   }
 
+  const handleResetLibrary = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!token || currentUser?.role !== 'admin' || resettingLibrary) return
+    setError('')
+    setNotice('')
+    setResettingLibrary(true)
+    try {
+      const result = await resetLibrary(token, dangerConfirmation)
+      setNotice(result.message)
+      if (result.deleted) {
+        localStorage.removeItem(TOKEN_KEY)
+        setToken('')
+        setCurrentUser(null)
+        setNeedsBootstrap(true)
+        setOverview(emptyOverview)
+        setStorage(null)
+        setUsers([])
+        setRuntimeConfig([])
+        setRuntimeConfigForm({})
+        setMedia([])
+        setJobs([])
+        setBackups([])
+        setSelectedMedia(null)
+        setViewerOpen(false)
+        setActiveTab('library')
+      } else {
+        setRefreshNonce((value) => value + 1)
+      }
+      setDangerConfirmation('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Full reset request failed')
+    } finally {
+      setResettingLibrary(false)
+    }
+  }
+
   const openMedia = (item: MediaItem) => startTransition(() => {
     setSelectedMedia(item)
     setViewerOpen(true)
@@ -588,6 +627,7 @@ function App() {
             {needsBootstrap ? <label>Telegram username<input value={authForm.telegram} onChange={(event) => setAuthForm({ ...authForm, telegram: event.target.value })} placeholder="@username" /></label> : null}
             <button className="primary-button" type="submit">{needsBootstrap ? 'Инициализировать систему' : 'Войти'}</button>
           </form>
+          {notice ? <div className="global-notice">{notice}</div> : null}
           {error ? <div className="inline-error">{error}</div> : null}
         </section>
       </main>
@@ -883,6 +923,29 @@ function App() {
                 <button className="primary-button" type="submit">Добавить пользователя</button>
               </form>
               <div className="list-stack">{users.map((user) => <article key={user.id} className="list-row"><div><strong>{user.username}</strong><small>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram не подключен'}</small></div><span className={`badge badge-role-${user.role}`}>{user.role}</span></article>)}</div>
+            </section>
+            <section className="glass-panel admin-panel danger-panel">
+              <div className="panel-head"><div><span>Danger Zone</span><h2>Полное удаление базы и всех медиа</h2></div></div>
+              <div className="danger-copy">
+                <p className="lede">Это удалит всю базу данных, все медиафайлы, архивы, превью, бэкапы, логи и пользователей. Действие необратимо.</p>
+                <small>Если сейчас есть активные jobs, система сначала поставит processing на паузу и попросит повторить удаление после завершения текущих задач.</small>
+              </div>
+              <form className="danger-form" onSubmit={handleResetLibrary}>
+                <label>
+                  Введите <strong>DELETE EVERYTHING</strong> для подтверждения
+                  <input
+                    value={dangerConfirmation}
+                    onChange={(event) => setDangerConfirmation(event.target.value)}
+                    placeholder="DELETE EVERYTHING"
+                    autoComplete="off"
+                  />
+                </label>
+                <div className="button-row">
+                  <button className="danger-button" type="submit" disabled={resettingLibrary || dangerConfirmation !== 'DELETE EVERYTHING'}>
+                    {resettingLibrary ? 'Удаляем...' : 'Удалить всю базу и медиа'}
+                  </button>
+                </div>
+              </form>
             </section>
           </div>
         ) : null}

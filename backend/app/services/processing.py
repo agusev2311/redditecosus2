@@ -16,7 +16,7 @@ from app.services.audit import audit
 from app.services.memory_guard import evaluate_processing_memory_guard
 from app.services.processor_monitor import touch_processor_heartbeat
 from app.services.runtime_config import get_runtime_value
-from app.services.storage import queue_media_for_processing
+from app.services.storage import ensure_media_artifacts, queue_media_for_processing
 from app.services.tag_catalog import get_tag_description_coordinator
 from app.utils.datetimes import seconds_between
 
@@ -368,6 +368,9 @@ class ProcessingCoordinator:
             job.attempts += 1
             media.processing_status = ProcessingStatus.processing
             session.commit()
+
+            if ensure_media_artifacts(session, media):
+                session.commit()
 
             analysis = ai_proxy_service.analyze_media(media)
             self._apply_analysis(session, media, analysis)

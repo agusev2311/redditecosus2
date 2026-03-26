@@ -187,6 +187,10 @@ function buildUploadNotice(result: UploadResponse) {
     parts.push(`в архиве ${archive.filename} не найдено поддерживаемых медиафайлов.${unsupportedHint}`)
   }
 
+  if (directCount || importedFromArchives) {
+    parts.push('превью и техметаданные догружаются в фоне')
+  }
+
   return parts.join(' · ')
 }
 
@@ -971,6 +975,8 @@ function App() {
   const failedJobsTotal = processingStats.failed
   const backlogEtaSeconds = processingStats.avg_total_seconds && processingStats.workers ? Math.round((backlogCount * processingStats.avg_total_seconds) / Math.max(processingStats.workers, 1)) : null
   const aiCoverage = overview.counts.media ? Math.round((completedMedia / overview.counts.media) * 100) : 0
+  const uploadPhaseLabel = uploading ? (uploadProgress >= 100 ? 'Сервер завершает импорт' : 'Идет загрузка') : 'Ожидание'
+  const uploadPhaseValue = uploading ? (uploadProgress >= 100 ? 'Байты приняты' : `${uploadProgress}%`) : 'Ready'
   const processingStatusBanner = overview.processing_paused
     ? 'Обработка поставлена на паузу вручную. Новые задачи не стартуют, пока вы не снимете Processing paused в админке.'
     : memoryGuard.active
@@ -1148,7 +1154,7 @@ function App() {
                 </div>
                 <div className="progress-block">
                   <div className="progress-track"><div className="progress-bar" style={{ width: `${uploadProgress}%` }} /></div>
-                  <div className="row-meta"><span>{uploading ? 'Идет загрузка' : 'Ожидание'}</span><strong>{uploading ? `${uploadProgress}%` : 'Ready'}</strong></div>
+                  <div className="row-meta"><span>{uploadPhaseLabel}</span><strong>{uploadPhaseValue}</strong></div>
                 </div>
               </section>
             </section>

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
+import mimetypes
 from pathlib import Path
 
 from werkzeug.datastructures import FileStorage
@@ -45,6 +45,34 @@ def _write_stream(input_stream, destination: Path) -> tuple[str, int]:
     return sha256.hexdigest(), total
 
 
+def _copy_file_with_hash(source: Path, destination: Path) -> tuple[str, int]:
+    sha256 = hashlib.sha256()
+    total = 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as input_stream, destination.open("wb") as target:
+        while True:
+            chunk = input_stream.read(1024 * 1024)
+            if not chunk:
+                break
+            sha256.update(chunk)
+            total += len(chunk)
+            target.write(chunk)
+    return sha256.hexdigest(), total
+
+
+def _guess_mime_type(filename: str, kind: MediaKind) -> str:
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed:
+        return guessed
+    if kind == MediaKind.image:
+        return "image/jpeg"
+    if kind == MediaKind.gif:
+        return "image/gif"
+    if kind == MediaKind.video:
+        return "video/mp4"
+    return "application/octet-stream"
+
+
 def _make_media_item(
     *,
     session,
@@ -58,7 +86,6 @@ def _make_media_item(
     archive_id: str | None = None,
 ) -> MediaItem:
     normalized = parse_filename_timestamp(original_filename)
-    probe = probe_media(final_path, kind)
     item = MediaItem(
         owner_id=owner_id,
         archive_id=archive_id,
@@ -66,24 +93,18 @@ def _make_media_item(
         original_filename=original_filename,
         source_path=source_path,
         storage_path=str(final_path.relative_to(settings.storage_root)),
-        mime_type=probe.mime_type,
+        mime_type=_guess_mime_type(original_filename, kind),
         sha256=sha256,
         file_size=file_size,
-        width=probe.width,
-        height=probe.height,
-        duration_seconds=probe.duration_seconds,
-        blur_score=probe.blur_score,
+        width=None,
+        height=None,
+        duration_seconds=None,
+        blur_score=None,
         processing_status=ProcessingStatus.pending,
         normalized_timestamp=normalized.value if normalized else None,
         timestamp_precision=normalized.precision if normalized else TimestampPrecision.none,
     )
     session.add(item)
-    session.flush()
-
-    thumb_path = settings.thumbnails_dir / f"{item.id}.jpg"
-    create_thumbnail(final_path, kind, thumb_path)
-    if thumb_path.exists():
-        item.thumbnail_path = str(thumb_path.relative_to(settings.storage_root))
     session.flush()
     return item
 
@@ -135,18 +156,7 @@ def import_media_file(session, owner_id: int, source_path: Path, original_filena
     item_dir = _owner_dir(owner_id) / "items"
     extension = source_path.suffix.lower() or ".bin"
     temp_path = item_dir / f"import_{hashlib.sha1(str(source_path).encode('utf-8')).hexdigest()[:12]}{extension}"
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, temp_path)
-
-    sha256 = hashlib.sha256()
-    with temp_path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            sha256.update(chunk)
-    file_size = temp_path.stat().st_size
-    digest = sha256.hexdigest()
+    digest, file_size = _copy_file_with_hash(source_path, temp_path)
 
     existing = session.query(MediaItem).filter_by(owner_id=owner_id, sha256=digest).first()
     if existing:
@@ -196,3 +206,42 @@ def absolute_thumbnail_path(item: MediaItem) -> Path | None:
         return None
     return settings.storage_root / item.thumbnail_path
 
+
+def ensure_media_artifacts(session, item: MediaItem, *, force: bool = False) -> bool:
+    changed = False
+    media_path = absolute_media_path(item)
+    if not media_path.exists():
+        raise FileNotFoundError(media_path)
+
+    needs_probe = force or any(
+        value is None
+        for value in (
+            item.width,
+            item.height,
+            item.duration_seconds if item.kind == MediaKind.video else 0,
+            item.blur_score if item.kind in {MediaKind.image, MediaKind.video} else 0,
+        )
+    )
+    if needs_probe:
+        probe = probe_media(media_path, item.kind)
+        item.mime_type = probe.mime_type or item.mime_type
+        item.width = probe.width
+        item.height = probe.height
+        item.duration_seconds = probe.duration_seconds
+        item.blur_score = probe.blur_score
+        changed = True
+
+    thumbnail_path = absolute_thumbnail_path(item)
+    needs_thumbnail = force or thumbnail_path is None or not thumbnail_path.exists()
+    if needs_thumbnail:
+        expected_path = settings.thumbnails_dir / f"{item.id}.jpg"
+        create_thumbnail(media_path, item.kind, expected_path)
+        if expected_path.exists():
+            relative_path = str(expected_path.relative_to(settings.storage_root))
+            if item.thumbnail_path != relative_path:
+                item.thumbnail_path = relative_path
+                changed = True
+
+    if changed:
+        session.flush()
+    return changed

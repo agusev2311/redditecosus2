@@ -152,12 +152,12 @@ def _image_to_data_url(image: Image.Image, caption: str) -> FramePayload:
     return FramePayload("image/jpeg", f"data:image/jpeg;base64,{encoded}", caption)
 
 
-def extract_frames_for_model(path: Path, kind: MediaKind, max_frames: int = 8) -> list[FramePayload]:
+def extract_frames_for_model(path: Path, kind: MediaKind, max_frames: int = 6) -> list[FramePayload]:
     frames: list[FramePayload] = []
     if kind == MediaKind.image:
         with Image.open(path) as image:
             frame = ImageOps.exif_transpose(image.convert("RGB"))
-            frame.thumbnail((1800, 1800))
+            frame.thumbnail((1600, 1600))
             frames.append(_image_to_data_url(frame, "image"))
         return frames
 
@@ -168,7 +168,7 @@ def extract_frames_for_model(path: Path, kind: MediaKind, max_frames: int = 8) -
             for frame_index in range(0, total_frames, step):
                 image.seek(frame_index)
                 frame = ImageOps.exif_transpose(image.convert("RGB"))
-                frame.thumbnail((1600, 1600))
+                frame.thumbnail((1280, 1280))
                 frames.append(_image_to_data_url(frame, f"gif_frame_{frame_index}"))
                 if len(frames) >= max_frames:
                     break
@@ -176,17 +176,21 @@ def extract_frames_for_model(path: Path, kind: MediaKind, max_frames: int = 8) -
 
     capture = cv2.VideoCapture(str(path))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = capture.get(cv2.CAP_PROP_FPS) or 0
     if frame_count <= 0:
         capture.release()
         return frames
-    indexes = sorted({int(frame_count * ratio) for ratio in [0.05, 0.18, 0.31, 0.44, 0.57, 0.7, 0.83, 0.96]})
-    for index in indexes[:max_frames]:
+    duration = float(frame_count / fps) if fps > 0 else None
+    target_frames = 4 if duration and duration <= 12 else max_frames
+    ratios = [0.08, 0.24, 0.4, 0.56, 0.72, 0.9][:target_frames]
+    indexes = sorted({int(frame_count * ratio) for ratio in ratios})
+    for index in indexes:
         capture.set(cv2.CAP_PROP_POS_FRAMES, index)
         ok, frame = capture.read()
         if not ok:
             continue
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        image.thumbnail((1600, 1600))
+        image.thumbnail((1280, 1280))
         frames.append(_image_to_data_url(image, f"video_frame_{index}"))
     capture.release()
     return frames

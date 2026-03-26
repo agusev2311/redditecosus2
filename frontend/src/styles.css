@@ -34,6 +34,7 @@ body,
 
 body {
   color: var(--text);
+  overflow-y: scroll;
   background:
     radial-gradient(circle at top right, rgba(154, 93, 255, 0.08), transparent 22rem),
     linear-gradient(180deg, #120a1b 0%, #09050f 100%);
@@ -88,6 +89,7 @@ video {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .auth-card,
@@ -138,6 +140,22 @@ h2,
 h3,
 p {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.workspace-grid > *,
+.left-rail > *,
+.center-stage > *,
+.right-rail > *,
+.section-head > *,
+.compact-row > *,
+.brand-lockup > *,
+.topbar-actions > *,
+.tag-cloud > *,
+.detail-grid > *,
+.storage-facts > *,
+.user-card > * {
+  min-width: 0;
 }
 
 h1 {
@@ -264,6 +282,7 @@ select:focus {
 .info-strip,
 .compact-row,
 .brand-lockup,
+.topbar-status,
 .topbar-actions,
 .button-row,
 .toolbar-chips,
@@ -286,6 +305,17 @@ select:focus {
 
 .topbar {
   margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.section-head,
+.topbar-actions,
+.button-row,
+.toolbar-chips,
+.tag-cloud,
+.info-strip,
+.preview-overlay {
+  flex-wrap: wrap;
 }
 
 .brand-mark {
@@ -313,9 +343,26 @@ select:focus {
   font-size: 0.75rem;
 }
 
+.topbar-status {
+  flex: 1 1 220px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
+}
+
 .workspace-grid {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(260px, 320px);
   gap: 0.75rem;
   align-items: start;
 }
@@ -337,12 +384,10 @@ select:focus {
 
 .center-stage {
   grid-column: 2;
-  grid-row: 1 / span 2;
 }
 
 .right-rail {
-  grid-column: 1;
-  grid-row: 2;
+  grid-column: 3;
 }
 
 .identity-panel,
@@ -354,10 +399,17 @@ select:focus {
   display: none;
 }
 
-.filter-row {
+.filter-row,
+.filter-grid,
+.search-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.5rem;
+}
+
+.filter-grid .filter-span-2,
+.search-field {
+  grid-column: span 2;
 }
 
 .dropwell {
@@ -403,12 +455,33 @@ select:focus {
   padding: 0.7rem 0.8rem;
   border-radius: 14px;
   background: var(--panel-soft);
+  gap: 0.75rem;
 }
 
+.queue-row,
+.row-copy,
+.user-card > div {
+  min-width: 0;
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.row-copy,
 .queue-row > div,
 .user-card > div {
   display: grid;
   gap: 0.2rem;
+}
+
+.row-copy strong,
+.row-copy small,
+.queue-row strong,
+.queue-row small {
+  overflow-wrap: anywhere;
 }
 
 .compact-head h3,
@@ -427,6 +500,10 @@ select:focus {
   font-weight: 500;
   background: var(--panel-soft);
   border: 1px solid rgba(255, 255, 255, 0.05);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badge-sfw,
@@ -441,6 +518,10 @@ select:focus {
 
 .badge-nsfw,
 .badge-status-failed {
+  color: var(--danger);
+}
+
+.queue-stat.danger strong {
   color: var(--danger);
 }
 
@@ -463,9 +544,9 @@ select:focus {
   margin-bottom: 0.6rem;
 }
 
-.library-toolbar p,
 .toolbar-chips {
-  display: none;
+  display: flex;
+  flex-wrap: wrap;
 }
 
 .atlas-grid {
@@ -479,6 +560,8 @@ select:focus {
   overflow: hidden;
   text-align: left;
   padding: 0;
+  display: flex;
+  flex-direction: column;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
@@ -528,17 +611,54 @@ select:focus {
   display: grid;
   gap: 0.45rem;
   padding: 0.7rem;
+  min-width: 0;
 }
 
 .atlas-body h3 {
   font-size: 0.82rem;
   line-height: 1.35;
   overflow: hidden;
-  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
-.atlas-body p {
-  display: none;
+.atlas-description {
+  display: -webkit-box;
+  color: var(--muted);
+  line-height: 1.45;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.processing-panel,
+.processing-grid,
+.processing-notes {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.processing-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.processing-notes {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.processing-notes span {
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .empty-preview {
@@ -576,6 +696,7 @@ select:focus {
 .storage-facts > div,
 .user-usage,
 .metric-inline,
+.queue-stat,
 .compact-admin > div,
 .user-card {
   padding: 0.75rem;
@@ -628,6 +749,8 @@ select:focus {
 
 .modal {
   width: min(980px, 100%);
+  max-height: calc(100vh - 1.5rem);
+  overflow: auto;
 }
 
 .modal-grid {
@@ -642,6 +765,22 @@ select:focus {
   border-radius: 14px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.2);
+}
+
+@media (max-width: 1360px) {
+  .workspace-grid {
+    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  }
+
+  .right-rail {
+    grid-column: 1 / span 2;
+    grid-row: auto;
+  }
+
+  .processing-grid,
+  .processing-notes {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1100px) {
@@ -659,9 +798,11 @@ select:focus {
     display: grid;
   }
 
-  .queue-panel,
-  .backup-panel {
-    display: grid;
+  .processing-grid,
+  .processing-notes,
+  .filter-grid,
+  .search-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .modal-grid {
@@ -681,6 +822,7 @@ select:focus {
   .topbar,
   .section-head,
   .row-between,
+  .topbar-status,
   .topbar-actions,
   .button-row,
   .library-toolbar,
@@ -703,10 +845,21 @@ select:focus {
   }
 
   .atlas-grid,
+  .filter-grid,
+  .search-grid,
   .detail-grid,
+  .queue-grid,
   .storage-facts,
-  .admin-form {
+  .admin-form,
+  .processing-grid,
+  .processing-notes {
     grid-template-columns: 1fr;
+  }
+
+  .filter-grid .filter-span-2,
+  .search-field,
+  .right-rail {
+    grid-column: auto;
   }
 
   .modal-preview {

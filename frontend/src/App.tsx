@@ -17,12 +17,34 @@ import {
   reindexMedia,
   uploadFiles,
 } from './api'
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, SafetyRating, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, SafetyRating, User } from './types'
 
 const TOKEN_KEY = 're2_token'
 
+const emptyProcessingStats: ProcessingStats = {
+  workers: 0,
+  queued: 0,
+  processing: 0,
+  failed: 0,
+  complete: 0,
+  completed_last_24h: 0,
+  failed_last_24h: 0,
+  recent_failure_events: 0,
+  throughput_per_hour_24h: 0,
+  avg_total_seconds: null,
+  p95_total_seconds: null,
+  avg_ai_seconds: null,
+  p95_ai_seconds: null,
+  avg_frames: null,
+  avg_prompt_tokens: null,
+  avg_completion_tokens: null,
+  avg_reasoning_tokens: null,
+  oldest_queued_seconds: null,
+}
+
 const emptyOverview: OverviewPayload = {
   counts: { media: 0, users: 0, jobs: 0 },
+  processing_stats: emptyProcessingStats,
   recent_logs: [],
   prompt_preview: '',
 }
@@ -45,14 +67,25 @@ function formatDate(value?: string | null) {
 }
 
 function formatDuration(value?: number | null) {
-  if (!value) return 'n/a'
-  const rounded = Math.max(1, Math.round(value))
+  if (value === null || value === undefined || Number.isNaN(value)) return 'n/a'
+  const rounded = Math.max(0, Math.round(value))
   const hours = Math.floor(rounded / 3600)
   const minutes = Math.floor((rounded % 3600) / 60)
   const seconds = rounded % 60
   if (hours) return `${hours}ч ${minutes}м`
   if (minutes) return `${minutes}м ${seconds.toString().padStart(2, '0')}с`
   return `${seconds}с`
+}
+
+function formatMetric(value?: number | null, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'n/a'
+  if (Number.isInteger(value)) return `${value}`
+  return value.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')
+}
+
+function formatSecondsMetric(value?: number | null) {
+  if (value === null || value === undefined) return 'n/a'
+  return `${formatMetric(value)}с`
 }
 
 function trimText(value: string | null | undefined, fallback: string, max = 176) {
@@ -153,6 +186,9 @@ function App() {
           if (cancelled) return
           setStorage(storagePayload)
           setUsers(usersPayload.items)
+        } else {
+          setStorage(null)
+          setUsers([])
         }
       } catch (reason) {
         if (!cancelled) {
@@ -272,6 +308,7 @@ function App() {
     localStorage.removeItem(TOKEN_KEY)
     setToken('')
     setCurrentUser(null)
+    setOverview(emptyOverview)
     setStorage(null)
     setUsers([])
     setMedia([])
@@ -310,6 +347,7 @@ function App() {
     })
   })
 
+  const processingStats = overview.processing_stats ?? emptyProcessingStats
   const backlogCount = queueCounts.queued + queueCounts.processing
   const spotlight = selectedMedia ?? media[0] ?? null
   const trendingTags = Array.from(tagCountMap.values())
@@ -320,6 +358,10 @@ function App() {
   const projectUsageTotal = storage?.project.total ?? 0
   const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')
   const highPriorityJobs = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 6)
+  const backlogEtaSeconds =
+    processingStats.avg_total_seconds && processingStats.workers
+      ? Math.round((backlogCount * processingStats.avg_total_seconds) / Math.max(processingStats.workers, 1))
+      : null
   const resultDescription =
     searchInput || kindFilter || ratingFilter || statusFilter
       ? 'Результаты уже отфильтрованы по вашему текущему запросу.'
@@ -376,6 +418,12 @@ function App() {
               {currentUser.username} · {roleLabel(currentUser)}
             </small>
           </div>
+        </div>
+
+        <div className="topbar-status">
+          <span className="status-pill">{overview.counts.media} media</span>
+          <span className="status-pill">AI {aiCoverage}%</span>
+          <span className="status-pill">queue {backlogCount}</span>
         </div>
 
         <div className="topbar-actions">
@@ -652,8 +700,10 @@ function App() {
                       className="atlas-hitbox"
                       type="button"
                       onClick={() => {
-                        setSelectedMedia(item)
-                        setViewerOpen(true)
+                        startTransition(() => {
+                          setSelectedMedia(item)
+                          setViewerOpen(true)
+                        })
                       }}
                     >
                       <span className="sr-only">Select media</span>
@@ -678,7 +728,7 @@ function App() {
                       </div>
 
                       <h3 title={item.original_filename}>{item.original_filename}</h3>
-                      <p>{trimText(item.description, 'AI-описание пока не готово. После индексации здесь появится подробный разбор сцены.')}</p>
+                      <p className="atlas-description">{trimText(item.description, 'AI-описание пока не готово. После индексации здесь появится подробный разбор сцены.', 120)}</p>
 
                       <div className="info-strip">
                         <span>{item.width && item.height ? `${item.width}×${item.height}` : kindLabel(item.kind)}</span>
@@ -686,7 +736,7 @@ function App() {
                       </div>
 
                       <div className="tag-cloud">
-                        {(item.tags ?? []).slice(0, 7).map((tag) => (
+                        {(item.tags ?? []).slice(0, 5).map((tag) => (
                           <span key={`${item.id}-${tag.kind}-${tag.name}`} className={`tag-chip static-chip tag-${tag.kind}`}>
                             {tag.name.replaceAll('_', ' ')}
                           </span>
@@ -709,75 +759,58 @@ function App() {
         </section>
 
         <aside className="right-rail">
-          <section className="glass-panel spotlight-panel">
+          <section className="glass-panel processing-panel">
             <div className="section-head">
               <div>
-                <div className="panel-kicker">Spotlight</div>
-                <h2>{spotlight ? 'Текущий фокус' : 'Выберите карточку'}</h2>
+                <div className="panel-kicker">Processing</div>
+                <h2>Скорость и очередь</h2>
               </div>
-              {spotlight ? (
-                <div className="button-row">
-                  <button className="secondary-button" type="button" onClick={() => setViewerOpen(true)}>
-                    Открыть
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => void handleReindex(spotlight.id)}>
-                    Reindex
-                  </button>
-                </div>
-              ) : null}
+              <span className="badge badge-status-processing">{processingStats.workers} workers</span>
             </div>
 
-            {spotlight ? (
-              <div className="spotlight-body">
-                <div className="spotlight-preview">
-                  {spotlight.kind === 'video' ? (
-                    <video controls src={mediaAssetUrl(spotlight.file_url, token)} />
-                  ) : (
-                    <img src={mediaAssetUrl(spotlight.file_url, token)} alt={spotlight.original_filename} />
-                  )}
-                </div>
+            <div className="processing-grid">
+              <article className="metric-inline">
+                <span>Avg total</span>
+                <strong>{formatSecondsMetric(processingStats.avg_total_seconds)}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>P95 total</span>
+                <strong>{formatSecondsMetric(processingStats.p95_total_seconds)}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>Avg AI</span>
+                <strong>{formatSecondsMetric(processingStats.avg_ai_seconds)}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>P95 AI</span>
+                <strong>{formatSecondsMetric(processingStats.p95_ai_seconds)}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>24h done</span>
+                <strong>{processingStats.completed_last_24h}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>Throughput</span>
+                <strong>{formatMetric(processingStats.throughput_per_hour_24h)}/ч</strong>
+              </article>
+              <article className="metric-inline">
+                <span>Queue age</span>
+                <strong>{formatDuration(processingStats.oldest_queued_seconds)}</strong>
+              </article>
+              <article className="metric-inline">
+                <span>ETA backlog</span>
+                <strong>{formatDuration(backlogEtaSeconds)}</strong>
+              </article>
+            </div>
 
-                <div className="spotlight-copy">
-                  <div className="spotlight-badges">
-                    <span className={`badge badge-${spotlight.safety_rating}`}>{ratingLabel(spotlight.safety_rating)}</span>
-                    <span className={`badge badge-status-${spotlight.processing_status}`}>{spotlight.processing_status}</span>
-                  </div>
-                  <h3>{spotlight.original_filename}</h3>
-                  <p>{trimText(spotlight.description, 'AI-описание пока отсутствует.', 240)}</p>
-
-                  <div className="detail-grid">
-                    <div>
-                      <span>Размер</span>
-                      <strong>{formatBytes(spotlight.file_size)}</strong>
-                    </div>
-                    <div>
-                      <span>Тип</span>
-                      <strong>{kindLabel(spotlight.kind)}</strong>
-                    </div>
-                    <div>
-                      <span>Blur</span>
-                      <strong>{spotlight.blur_score?.toFixed(1) ?? 'n/a'}</strong>
-                    </div>
-                    <div>
-                      <span>Время</span>
-                      <strong>{formatDate(spotlight.normalized_timestamp)}</strong>
-                    </div>
-                  </div>
-
-                  {spotlight.technical_notes ? <div className="note-block">{spotlight.technical_notes}</div> : null}
-
-                  <div className="tag-cloud">
-                    {(spotlight.tags ?? []).map((tag) => (
-                      <span key={`${spotlight.id}-${tag.kind}-${tag.name}`} className={`tag-chip static-chip tag-${tag.kind}`}>
-                        {tag.name.replaceAll('_', ' ')}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="muted">Откройте библиотеку в центре и выберите файл, чтобы увидеть расширенный просмотр.</div>
-            )}
+            <div className="processing-notes">
+              <span>frames ~{formatMetric(processingStats.avg_frames)}</span>
+              <span>prompt ~{formatMetric(processingStats.avg_prompt_tokens)}</span>
+              <span>completion ~{formatMetric(processingStats.avg_completion_tokens)}</span>
+              <span>reasoning ~{formatMetric(processingStats.avg_reasoning_tokens)}</span>
+              <span>failed 24h {processingStats.failed_last_24h}</span>
+              <span>log failures {processingStats.recent_failure_events}</span>
+            </div>
           </section>
 
           <section id="queue" className="glass-panel queue-panel">

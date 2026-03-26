@@ -56,12 +56,34 @@ export interface LogItem {
   created_at?: string | null
 }
 
+export interface ProcessingStats {
+  workers: number
+  queued: number
+  processing: number
+  failed: number
+  complete: number
+  completed_last_24h: number
+  failed_last_24h: number
+  recent_failure_events: number
+  throughput_per_hour_24h?: number | null
+  avg_total_seconds?: number | null
+  p95_total_seconds?: number | null
+  avg_ai_seconds?: number | null
+  p95_ai_seconds?: number | null
+  avg_frames?: number | null
+  avg_prompt_tokens?: number | null
+  avg_completion_tokens?: number | null
+  avg_reasoning_tokens?: number | null
+  oldest_queued_seconds?: number | null
+}
+
 export interface OverviewPayload {
   counts: {
     media: number
     users: number
     jobs: number
   }
+  processing_stats: ProcessingStats
   recent_logs: LogItem[]
   prompt_preview: string
 }
@@ -91,4 +113,3 @@ export interface UploadResponse {
   items: MediaItem[]
   archives: Array<{ archive_id: string; media_ids: string[] }>
 }
-

@@ -69,13 +69,30 @@ class ProcessingCoordinator:
             job.status = JobStatus.complete
             job.error_message = None
             job.completed_at = datetime.now(timezone.utc)
+            total_seconds = (
+                max((job.completed_at - job.started_at).total_seconds(), 0.0)
+                if job.started_at and job.completed_at
+                else None
+            )
+            job.payload = {
+                "metrics": {
+                    **(analysis.get("x_metrics") or {}),
+                    "total_seconds": round(total_seconds, 3) if total_seconds is not None else None,
+                    "worker": threading.current_thread().name,
+                }
+            }
             media.processing_status = ProcessingStatus.complete
             session.commit()
             audit(
                 "media.indexed",
                 f"Indexed media {media.original_filename}",
                 owner_id=media.owner_id,
-                context={"media_id": media.id, "job_id": job.id},
+                context={
+                    "media_id": media.id,
+                    "job_id": job.id,
+                    "total_seconds": total_seconds,
+                    "ai_seconds": (analysis.get("x_metrics") or {}).get("ai_seconds"),
+                },
             )
         except Exception as exc:
             session.rollback()
@@ -84,6 +101,18 @@ class ProcessingCoordinator:
                 job.status = JobStatus.failed
                 job.error_message = str(exc)
                 job.completed_at = datetime.now(timezone.utc)
+                total_seconds = (
+                    max((job.completed_at - job.started_at).total_seconds(), 0.0)
+                    if job.started_at and job.completed_at
+                    else None
+                )
+                existing_payload = job.payload or {}
+                existing_payload["metrics"] = {
+                    **(existing_payload.get("metrics") or {}),
+                    "total_seconds": round(total_seconds, 3) if total_seconds is not None else None,
+                    "worker": threading.current_thread().name,
+                }
+                job.payload = existing_payload
                 media = session.get(MediaItem, job.media_id)
                 if media is not None:
                     media.processing_status = ProcessingStatus.failed

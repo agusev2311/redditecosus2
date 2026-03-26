@@ -6,6 +6,7 @@ from app.db.session import SessionLocal
 from app.models import AuditLog, MediaItem, ProcessingJob, User
 from app.services.ai_proxy import ANALYSIS_PROMPT
 from app.services.disk_usage import summarize_disk_usage
+from app.services.processing_stats import build_processing_stats, recent_logs_query_for_user
 from app.utils.auth import admin_required, login_required
 
 
@@ -19,11 +20,13 @@ def overview():
     try:
         media_query = session.query(MediaItem)
         jobs_query = session.query(ProcessingJob)
+        logs_query = session.query(AuditLog)
         if g.current_user.role.value != "admin":
             media_query = media_query.filter(MediaItem.owner_id == g.current_user.id)
             jobs_query = jobs_query.filter(ProcessingJob.owner_id == g.current_user.id)
+            logs_query = recent_logs_query_for_user(logs_query, g.current_user)
 
-        recent_logs = session.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
+        recent_logs = logs_query.order_by(AuditLog.created_at.desc()).limit(20).all()
         return jsonify(
             {
                 "counts": {
@@ -31,6 +34,7 @@ def overview():
                     "users": session.query(User).count() if g.current_user.role.value == "admin" else 1,
                     "jobs": jobs_query.count(),
                 },
+                "processing_stats": build_processing_stats(session, jobs_query, logs_query),
                 "recent_logs": [
                     {
                         "id": row.id,
@@ -77,4 +81,3 @@ def logs():
         )
     finally:
         session.close()
-

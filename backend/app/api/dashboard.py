@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from flask import Blueprint, g, jsonify
+from sqlalchemy import or_
 
 from app.db.session import SessionLocal
 from app.models import AuditLog, MediaItem, MediaKind, ProcessingJob, ProcessingStatus, SafetyRating, User
@@ -15,8 +16,15 @@ dashboard_bp = Blueprint("dashboard", __name__)
 
 def _build_media_counts(media_query):
     total_media = media_query.count()
+    ai_ready_count = media_query.filter(
+        or_(
+            MediaItem.ai_payload.is_not(None),
+            MediaItem.description.is_not(None),
+        )
+    ).count()
     return {
         "media": total_media,
+        "ai_ready": ai_ready_count,
         "media_by_kind": {
             "image": media_query.filter(MediaItem.kind == MediaKind.image).count(),
             "gif": media_query.filter(MediaItem.kind == MediaKind.gif).count(),

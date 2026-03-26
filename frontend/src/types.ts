@@ -82,6 +82,7 @@ export interface ProcessingStats {
 export interface OverviewPayload {
   counts: {
     media: number
+    ai_ready: number
     media_by_kind: {
       image: number
       gif: number

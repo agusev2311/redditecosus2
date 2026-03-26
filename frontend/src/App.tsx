@@ -57,6 +57,7 @@ const emptyProcessingStats: ProcessingStats = {
 const emptyOverview: OverviewPayload = {
   counts: {
     media: 0,
+    ai_ready: 0,
     media_by_kind: { image: 0, gif: 0, video: 0 },
     media_by_status: { pending: 0, processing: 0, complete: 0, failed: 0 },
     media_by_safety: { sfw: 0, questionable: 0, nsfw: 0, unknown: 0 },
@@ -508,7 +509,7 @@ function App() {
     failed: processingStats.failed,
   }
   const kindCounts = overview.counts.media_by_kind
-  const completedMedia = overview.counts.media_by_status.complete
+  const completedMedia = overview.counts.ai_ready
   const nsfwMedia = overview.counts.media_by_safety.nsfw
   const backlogCount = processingStats.queued + processingStats.processing
   const failedJobsTotal = processingStats.failed

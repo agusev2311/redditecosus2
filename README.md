@@ -117,6 +117,7 @@ docker compose up -d --build
 
 ### Что внутри docker-стека
 
-- `backend` - Flask API под `gunicorn`
+- `backend` - Flask API под `gunicorn`, без тяжелой индексации внутри веб-процесса
+- `processor` - отдельный процесс очереди, который занимается AI-анализом медиа
 - `frontend` - React build + `nginx` reverse proxy с TLS
 - `telegram-bot` - отдельный процесс для Telegram polling и inline mode

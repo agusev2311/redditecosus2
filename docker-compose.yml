@@ -7,6 +7,7 @@ services:
         format: raw
     environment:
       APP_ENV: production
+      APP_ENABLE_PROCESSING: "false"
       APP_DATA_ROOT: /app/data
       APP_TRUST_REVERSE_PROXY: "true"
       APP_PUBLIC_BASE_URL: https://${APP_DOMAIN:-localhost}
@@ -24,6 +25,31 @@ services:
       timeout: 10s
       retries: 5
       start_period: 25s
+
+  processor:
+    build:
+      context: ./backend
+    command: ["python", "processor.py"]
+    env_file:
+      - path: ./backend/.env
+        format: raw
+    environment:
+      APP_ENV: production
+      APP_ENABLE_PROCESSING: "true"
+      APP_DATA_ROOT: /app/data
+      APP_TRUST_REVERSE_PROXY: "true"
+      APP_PUBLIC_BASE_URL: https://${APP_DOMAIN:-localhost}
+      APP_FRONTEND_URL: https://${APP_DOMAIN:-localhost},https://localhost
+      TELEGRAM_INLINE_BASE_URL: https://${APP_DOMAIN:-localhost}
+    volumes:
+      - app_data:/app/data
+      - ${EXTRA_CA_CERTS_PATH:-./deploy/certs}:/run/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
   frontend:
     build:

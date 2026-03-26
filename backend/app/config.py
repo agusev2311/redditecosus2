@@ -61,6 +61,7 @@ class Settings:
     frontend_url: str = os.getenv("APP_FRONTEND_URL", "http://127.0.0.1:5173")
     frontend_origins: tuple[str, ...] = _csv("APP_FRONTEND_URL", "http://127.0.0.1:5173")
     processing_workers: int = int(os.getenv("APP_PROCESSING_WORKERS", "3"))
+    enable_processing: bool = _bool("APP_ENABLE_PROCESSING", True)
     thumbnail_width: int = int(os.getenv("APP_THUMBNAIL_WIDTH", "640"))
     analysis_image_max_dimension: int = int(os.getenv("APP_ANALYSIS_IMAGE_MAX_DIMENSION", "0"))
     backup_chunk_mb: int = int(os.getenv("APP_BACKUP_CHUNK_MB", "49"))

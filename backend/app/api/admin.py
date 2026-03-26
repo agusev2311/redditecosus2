@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, g, jsonify, request
 
+from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, ProcessingJob, User, UserRole
 from app.services.audit import audit
@@ -135,9 +136,10 @@ def reindex_all_media():
     finally:
         session.close()
 
-    coordinator = get_processing_coordinator()
-    for job_id in queued_job_ids:
-        coordinator.enqueue(job_id)
+    if settings.enable_processing:
+        coordinator = get_processing_coordinator()
+        for job_id in queued_job_ids:
+            coordinator.enqueue(job_id)
 
     audit(
         "admin.reindex_all_media",

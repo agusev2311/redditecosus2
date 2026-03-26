@@ -4,6 +4,7 @@ import queue
 import threading
 from datetime import datetime, timezone
 
+from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, ProcessingStatus, SafetyRating, Tag, TagKind, TagOrigin
 from app.services.ai_proxy import ai_proxy_service
@@ -16,10 +17,12 @@ from app.utils.datetimes import seconds_between
 class ProcessingCoordinator:
     def __init__(self) -> None:
         self._queue: queue.Queue[str] = queue.Queue()
+        self._queued_job_ids: set[str] = set()
         self._workers: dict[int, threading.Thread] = {}
         self._worker_stops: dict[int, threading.Event] = {}
         self._processing_slots = threading.Condition()
         self._active_processing = 0
+        self._sync_lock = threading.Lock()
         self._worker_counter = 0
         self._desired_workers = 0
         self._lock = threading.Lock()
@@ -40,6 +43,10 @@ class ProcessingCoordinator:
             )
 
     def enqueue(self, job_id: str) -> None:
+        with self._lock:
+            if job_id in self._queued_job_ids:
+                return
+            self._queued_job_ids.add(job_id)
         self._queue.put(job_id)
 
     def desired_worker_count(self) -> int:
@@ -82,13 +89,35 @@ class ProcessingCoordinator:
         return self.worker_count()
 
     def _enqueue_existing_jobs(self) -> None:
-        session = SessionLocal()
+        self._sync_queued_jobs(limit=500)
+
+    def _sync_queued_jobs(self, limit: int = 64) -> int:
+        if not self._sync_lock.acquire(blocking=False):
+            return 0
         try:
-            jobs = session.query(ProcessingJob).filter(ProcessingJob.status == JobStatus.queued).all()
-            for job in jobs:
-                self.enqueue(job.id)
+            session = SessionLocal()
+            try:
+                jobs = (
+                    session.query(ProcessingJob.id)
+                    .filter(ProcessingJob.status == JobStatus.queued)
+                    .order_by(ProcessingJob.created_at.asc())
+                    .limit(limit)
+                    .all()
+                )
+            finally:
+                session.close()
+
+            added = 0
+            for (job_id,) in jobs:
+                with self._lock:
+                    if job_id in self._queued_job_ids:
+                        continue
+                    self._queued_job_ids.add(job_id)
+                self._queue.put(job_id)
+                added += 1
+            return added
         finally:
-            session.close()
+            self._sync_lock.release()
 
     def _recover_inflight_jobs(self) -> int:
         session = SessionLocal()
@@ -127,11 +156,14 @@ class ProcessingCoordinator:
             try:
                 job_id = self._queue.get(timeout=1.0)
             except queue.Empty:
+                self._sync_queued_jobs()
                 continue
             try:
                 self._process(job_id, stop_event)
             finally:
                 self._queue.task_done()
+                with self._lock:
+                    self._queued_job_ids.discard(job_id)
 
     def _acquire_processing_slot(self, stop_event: threading.Event) -> bool:
         while True:
@@ -261,7 +293,8 @@ def enqueue_media(media_id: str) -> str:
             raise ValueError("Media not found")
         job = queue_media_for_processing(session, media)
         session.commit()
-        coordinator.enqueue(job.id)
+        if settings.enable_processing:
+            coordinator.enqueue(job.id)
         return job.id
     finally:
         session.close()

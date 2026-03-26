@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy import or_
 
+from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, Tag
 from app.services.archive import ingest_archive
@@ -69,13 +70,15 @@ def upload_media():
             file_type = detect_file_type(file.filename or "")
             if file_type == "archive":
                 archive_result = ingest_archive(session, g.current_user.id, file)
-                for job_id in archive_result.get("job_ids", []):
-                    get_processing_coordinator().enqueue(job_id)
+                if settings.enable_processing:
+                    for job_id in archive_result.get("job_ids", []):
+                        get_processing_coordinator().enqueue(job_id)
                 imported_archives.append(archive_result)
                 continue
             item = save_uploaded_media(session, g.current_user.id, file)
             job = queue_media_for_processing(session, item)
-            get_processing_coordinator().enqueue(job.id)
+            if settings.enable_processing:
+                get_processing_coordinator().enqueue(job.id)
             created.append(_media_to_dict(item))
         session.commit()
         return jsonify({"items": created, "archives": imported_archives})
@@ -313,8 +316,9 @@ def retry_failed_jobs():
     finally:
         session.close()
 
-    for job_id in queued_job_ids:
-        get_processing_coordinator().enqueue(job_id)
+    if settings.enable_processing:
+        for job_id in queued_job_ids:
+            get_processing_coordinator().enqueue(job_id)
 
     audit(
         "media.retry_failed_jobs",

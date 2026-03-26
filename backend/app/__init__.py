@@ -26,6 +26,6 @@ def create_app() -> Flask:
     init_db()
     register_blueprints(app)
     should_boot_workers = settings.env != "development" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
-    if should_boot_workers:
+    if settings.enable_processing and should_boot_workers:
         get_processing_coordinator().boot()
     return app

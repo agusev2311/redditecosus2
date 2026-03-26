@@ -2,7 +2,8 @@
 
 ## Services
 
-- `backend`: Flask API + internal processing workers, one Gunicorn worker to avoid duplicate queue consumers.
+- `backend`: Flask API only. It serves requests and does not run heavy media processing.
+- `processor`: dedicated background process for queue consumption and AI analysis.
 - `frontend`: Nginx serving the built SPA and proxying `/api/*` to `backend`.
 - `telegram-bot`: separate long-running bot process sharing the same app data.
 

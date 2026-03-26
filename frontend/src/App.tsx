@@ -105,6 +105,30 @@ function configValueToInput(value: string | number | boolean) {
   return `${value}`
 }
 
+const STORAGE_LABELS: Record<string, string> = {
+  media: 'Медиа',
+  archives: 'Архивы',
+  thumbnails: 'Превью',
+  backups: 'Бэкапы',
+  database: 'База данных',
+  logs: 'Логи',
+  incoming: 'Импорт',
+  other_on_drive: 'Другое на диске',
+  free: 'Свободно',
+}
+
+const STORAGE_COLORS: Record<string, string> = {
+  media: '#b989ff',
+  archives: '#7d8bff',
+  thumbnails: '#5ec8f8',
+  backups: '#f0b36a',
+  database: '#ef7aa4',
+  logs: '#73c38f',
+  incoming: '#d2c16d',
+  other_on_drive: '#5b5470',
+  free: 'rgba(255, 255, 255, 0.12)',
+}
+
 function roleLabel(user: User | null) {
   return user?.role === 'admin' ? 'Администратор' : 'Участник'
 }
@@ -482,6 +506,51 @@ function App() {
   const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
   const projectUsageTotal = storage?.project.total ?? 0
   const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')
+  const projectSegmentOrder = ['media', 'archives', 'thumbnails', 'backups', 'database', 'logs', 'incoming']
+  const orderedProjectBreakdown = [
+    ...projectSegmentOrder
+      .map((key) => [key, storage?.project?.[key] ?? 0] as const)
+      .filter(([, value]) => value > 0),
+    ...projectBreakdown.filter(([name, value]) => !projectSegmentOrder.includes(name) && value > 0),
+  ]
+  const driveBarSegments = storage?.drive_total
+    ? [
+        ...orderedProjectBreakdown.map(([name, value]) => ({
+          key: name,
+          label: STORAGE_LABELS[name] ?? name,
+          bytes: value,
+          color: STORAGE_COLORS[name] ?? '#8a82a6',
+          percent: (value / storage.drive_total) * 100,
+        })),
+        ...(storage.other_on_drive > 0
+          ? [{
+              key: 'other_on_drive',
+              label: STORAGE_LABELS.other_on_drive,
+              bytes: storage.other_on_drive,
+              color: STORAGE_COLORS.other_on_drive,
+              percent: (storage.other_on_drive / storage.drive_total) * 100,
+            }]
+          : []),
+        ...(storage.drive_free > 0
+          ? [{
+              key: 'free',
+              label: STORAGE_LABELS.free,
+              bytes: storage.drive_free,
+              color: STORAGE_COLORS.free,
+              percent: (storage.drive_free / storage.drive_total) * 100,
+            }]
+          : []),
+      ]
+    : []
+  const projectBarSegments = projectUsageTotal
+    ? orderedProjectBreakdown.map(([name, value]) => ({
+        key: name,
+        label: STORAGE_LABELS[name] ?? name,
+        bytes: value,
+        color: STORAGE_COLORS[name] ?? '#8a82a6',
+        percent: (value / projectUsageTotal) * 100,
+      }))
+    : []
   const topTags = Array.from(tagCountMap.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)
   const queueFocus = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 8)
   const tabs: TabDefinition[] = [
@@ -704,8 +773,53 @@ function App() {
                     <StatCard label="Свободно" value={formatBytes(storage.drive_free)} tone="success" />
                     <StatCard label="Проект" value={formatBytes(projectUsageTotal)} />
                   </div>
+                  <div className="storage-bars">
+                    <div className="storage-bar-card">
+                      <div className="row-meta">
+                        <strong>Диск целиком</strong>
+                        <small>{formatBytes(storage.drive_used)} занято из {formatBytes(storage.drive_total)}</small>
+                      </div>
+                      <div className="storage-bar" aria-label="Disk usage breakdown">
+                        {driveBarSegments.map((segment) => (
+                          <span
+                            key={segment.key}
+                            className="storage-segment"
+                            title={`${segment.label}: ${formatBytes(segment.bytes)} (${formatMetric(segment.percent)}%)`}
+                            style={{ width: `${segment.percent}%`, background: segment.color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="storage-bar-card">
+                      <div className="row-meta">
+                        <strong>Состав проекта</strong>
+                        <small>{formatBytes(projectUsageTotal)} внутри RE2</small>
+                      </div>
+                      <div className="storage-bar" aria-label="Project storage breakdown">
+                        {projectBarSegments.map((segment) => (
+                          <span
+                            key={segment.key}
+                            className="storage-segment"
+                            title={`${segment.label}: ${formatBytes(segment.bytes)} (${formatMetric(segment.percent)}%)`}
+                            style={{ width: `${segment.percent}%`, background: segment.color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="storage-legend">
+                      {driveBarSegments.map((segment) => (
+                        <article key={segment.key} className="storage-legend-item">
+                          <span className="storage-swatch" style={{ background: segment.color }} />
+                          <div>
+                            <strong>{segment.label}</strong>
+                            <small>{formatBytes(segment.bytes)} · {formatMetric(segment.percent)}%</small>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
                   <div className="list-stack">
-                    {projectBreakdown.map(([name, value]) => <article key={name} className="list-row"><div><strong>{name}</strong><small>{formatBytes(value)}</small></div><span className="badge">{Math.max(Math.round((value / Math.max(projectUsageTotal || 1, 1)) * 100), 1)}%</span></article>)}
+                    {orderedProjectBreakdown.map(([name, value]) => <article key={name} className="list-row"><div><strong>{STORAGE_LABELS[name] ?? name}</strong><small>{formatBytes(value)}</small></div><span className="badge">{Math.max(Math.round((value / Math.max(projectUsageTotal || 1, 1)) * 100), 1)}%</span></article>)}
                   </div>
                 </>
               ) : <p className="muted">Storage analytics unavailable.</p>}

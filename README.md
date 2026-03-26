@@ -51,6 +51,7 @@ npm run dev
 5. Если хотите пробросить внутрь контейнеров свой каталог CA/сертификатов, укажите `EXTRA_CA_CERTS_PATH`.
 
 По умолчанию compose ожидает их в `deploy/certs/server.crt` и `deploy/certs/server.key`, но можно указать и абсолютные пути на сервере.
+Для быстрой генерации self-signed сертификата есть [deploy/generate-self-signed.sh](C:\Users\Artem\Desktop\redditecosus2\deploy\generate-self-signed.sh).
 
 ### Запуск
 

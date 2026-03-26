@@ -105,10 +105,14 @@ class ProcessingCoordinator:
             (analysis["safety_tags"], TagKind.safety),
         ]
         for names, kind in grouped:
+            seen_names: set[str] = set()
             for raw_name in names:
                 name = raw_name.strip().lower().replace(" ", "_")
                 if not name:
                     continue
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
                 tag = session.query(Tag).filter_by(owner_id=media.owner_id, name=name, kind=kind).first()
                 if tag is None:
                     tag = Tag(owner_id=media.owner_id, name=name, kind=kind)
@@ -136,4 +140,3 @@ def enqueue_media(media_id: str) -> str:
 
 def get_processing_coordinator() -> ProcessingCoordinator:
     return coordinator
-

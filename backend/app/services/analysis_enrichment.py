@@ -26,6 +26,8 @@ _KEYWORD_MAP: dict[str, tuple[str, ...]] = {
     "sergal": ("sergal",),
     "avali": ("avali",),
     "kemonomimi": ("kemonomimi",),
+    "boykisser": ("boykisser",),
+    "hollow_knight": ("hollow_knight", "hollow knight", "hallownest"),
 }
 
 _FURRY_SPECIES_MAP: dict[str, tuple[str, ...]] = {
@@ -50,6 +52,7 @@ _IMPLIES_MAP: dict[str, tuple[str, ...]] = {
     "anthro": ("furry",),
     "fursuit": ("furry",),
     "fursona": ("furry",),
+    "boykisser": ("furry",),
 }
 
 _FURRY_TRIGGER_TAGS = {"furry", "anthro", "protogen", "sergal", "avali", "fursuit", "fursona"}
@@ -89,6 +92,19 @@ def _derive_protogen(normalized_corpus: str, stable_tags: set[str]) -> bool:
     return has_visor and has_synthetic
 
 
+def _derive_hollow_knight_character(normalized_corpus: str, stable_tags: set[str]) -> str | None:
+    if "the_knight" in stable_tags:
+        return "the_knight"
+    if "hollow_knight" not in stable_tags and not _contains_keyword(normalized_corpus, "hallownest"):
+        return None
+    if any(
+        _contains_keyword(normalized_corpus, keyword)
+        for keyword in ("the_knight", "the knight", "knight", "little_ghost", "little ghost", "vessel")
+    ):
+        return "the_knight"
+    return None
+
+
 def enrich_analysis_tags(
     analysis: dict[str, Any],
     media: MediaItem,
@@ -118,6 +134,10 @@ def enrich_analysis_tags(
     stable_tags = set(semantic_tags) | derived
     if _derive_protogen(normalized_corpus, stable_tags):
         stable_tags.add("protogen")
+    hollow_knight_character = _derive_hollow_knight_character(normalized_corpus, stable_tags)
+    if hollow_knight_character:
+        stable_tags.add(hollow_knight_character)
+        stable_tags.add("hollow_knight")
 
     for tag in list(stable_tags):
         stable_tags.update(_IMPLIES_MAP.get(tag, ()))

@@ -37,6 +37,13 @@ Required behavior:
 - Safety rating must be one of: sfw, questionable, nsfw.
 - Infer whether the media is blurred or soft, even if the local blur score is already supplied.
 - Preserve recurring visual concepts: characters, clothing, body parts, actions, objects, camera angle, lighting, color palette, environment, motion cues, meme format, overlays, text presence.
+- When a recognizable named character, mascot, avatar, VTuber, fursona, game character, anime/manga character, comic character, or meme character is visible, include the most specific character tag you can justify.
+- When a recognizable franchise, game, series, anime, manga, comic, show, or universe can be inferred with reasonable confidence, include that franchise/source tag too.
+- Prefer character + source pairs when justified. Examples:
+  - Boykisser -> include boykisser
+  - The Knight from Hollow Knight -> include the_knight and hollow_knight
+  - Isabelle from Animal Crossing -> include isabelle and animal_crossing
+- If you suspect a specific named character or franchise but confidence is weak, still mention that possibility in the descriptions, but do not emit the tag unless the evidence is reasonably strong.
 - Capture useful retrieval phrases in plain language, not only single-word tags.
 - Prefer both umbrella tags and subtype tags when a more specific category is visible. Do not stop at a broad parent label if a narrower label is justified.
 - If the media is furry / anthropomorphic / kemono / fursuit related, include furry plus the most specific justified subtype or species tags. Example: a protogen should produce protogen and furry, not only furry.
@@ -52,6 +59,7 @@ Output contract:
 - description_ru: a detailed Russian paragraph describing the scene or sequence.
 - description_en: a detailed English paragraph describing the scene or sequence.
 - semantic_tags: 16 to 48 tags, lower_snake_case where practical, mixing broad categories and precise subtypes/species/fandom labels.
+- If recognizable, semantic_tags should include specific character tags and source/franchise tags, not just broad generic tags.
 - technical_tags: lower_snake_case tags for media/quality/rendering.
 - safety_tags: must include one of sfw/questionable/nsfw and may include suggestive, nudity, censor, etc.
 - blur_assessment: short sentence about sharpness or blur.

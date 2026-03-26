@@ -659,9 +659,7 @@ button:disabled {
 }
 
 .gallery-preview img,
-.gallery-preview video,
-.modal-preview img,
-.modal-preview video {
+.gallery-preview video {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -779,22 +777,27 @@ button:disabled {
 }
 
 .modal {
-  width: min(1220px, 100%);
+  width: min(1420px, 100%);
   max-height: calc(100vh - 2rem);
   overflow: auto;
 }
 
 .modal-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) 360px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
   gap: var(--space-lg);
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
 }
 
 .modal-preview {
-  height: min(72vh, 820px);
-  min-height: 280px;
-  max-height: calc(100vh - 180px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: min(78vh, calc(100vh - 150px));
+  min-height: 320px;
+  max-height: calc(100vh - 150px);
+  padding: 0.75rem;
   border-radius: 24px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.22);
@@ -802,7 +805,18 @@ button:disabled {
 
 .modal-preview img,
 .modal-preview video {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center;
+}
+
+.modal-copy {
+  min-width: 0;
+  max-height: min(78vh, calc(100vh - 150px));
+  overflow: auto;
 }
 
 .note-block {

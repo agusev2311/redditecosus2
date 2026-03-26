@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import itertools
 import queue
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.config import settings
 from app.db.session import SessionLocal
@@ -16,16 +18,69 @@ from app.services.tag_catalog import get_tag_description_coordinator
 from app.utils.datetimes import seconds_between
 
 
+_MB = 1024 * 1024
+
+
+class QueuedJob:
+    __slots__ = ("priority", "sequence", "job_id")
+
+    def __init__(self, *, priority: tuple[int, int, int, int], sequence: int, job_id: str) -> None:
+        self.priority = priority
+        self.sequence = sequence
+        self.job_id = job_id
+
+    def __lt__(self, other: "QueuedJob") -> bool:
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.sequence < other.sequence
+
+
+def estimate_media_load_units(media: MediaItem) -> int:
+    file_size = max(int(media.file_size or 0), 0)
+    width = max(int(media.width or 0), 0)
+    height = max(int(media.height or 0), 0)
+    pixels = width * height
+    duration = float(media.duration_seconds or 0.0)
+    extension = Path(media.original_filename or "").suffix.lower()
+
+    if media.kind.value == "image":
+        if pixels >= 48_000_000 or file_size >= 80 * _MB:
+            return 8
+        if pixels >= 24_000_000 or file_size >= 32 * _MB:
+            return 5
+        if pixels >= 10_000_000 or file_size >= 10 * _MB:
+            return 3
+        return 1
+
+    if media.kind.value == "gif":
+        if file_size >= 96 * _MB or pixels >= 12_000_000:
+            return 10
+        if file_size >= 32 * _MB or pixels >= 4_000_000:
+            return 6
+        return 3
+
+    # videos are typically heavier because frame extraction + decode pressure RAM and CPU
+    if duration >= 180 or file_size >= 256 * _MB:
+        return 12
+    if duration >= 60 or file_size >= 96 * _MB:
+        return 8
+    if duration >= 20 or file_size >= 32 * _MB or extension in {".mkv", ".mov"}:
+        return 5
+    return 3
+
+
 class ProcessingCoordinator:
     def __init__(self) -> None:
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.PriorityQueue[QueuedJob] = queue.PriorityQueue()
         self._queued_job_ids: set[str] = set()
         self._workers: dict[int, threading.Thread] = {}
         self._worker_stops: dict[int, threading.Event] = {}
         self._processing_slots = threading.Condition()
-        self._active_processing = 0
+        self._active_load = 0
+        self._active_heavy_jobs = 0
         self._sync_lock = threading.Lock()
         self._worker_counter = 0
+        self._enqueue_counter = itertools.count()
         self._desired_workers = 0
         self._lock = threading.Lock()
         self._booted = False
@@ -49,7 +104,50 @@ class ProcessingCoordinator:
             if job_id in self._queued_job_ids:
                 return
             self._queued_job_ids.add(job_id)
-        self._queue.put(job_id)
+        self._queue.put(self._build_queued_job(job_id))
+
+    def _build_queued_job(self, job_id: str) -> QueuedJob:
+        session = SessionLocal()
+        try:
+            row = (
+                session.query(
+                    ProcessingJob.created_at,
+                    ProcessingJob.attempts,
+                    MediaItem.kind,
+                    MediaItem.file_size,
+                    MediaItem.width,
+                    MediaItem.height,
+                    MediaItem.duration_seconds,
+                    MediaItem.original_filename,
+                )
+                .join(MediaItem, MediaItem.id == ProcessingJob.media_id)
+                .filter(ProcessingJob.id == job_id)
+                .first()
+            )
+        finally:
+            session.close()
+
+        if row is None:
+            priority = (999, 999_999_999, 999, 999)
+        else:
+            created_at, attempts, kind, file_size, width, height, duration_seconds, original_filename = row
+            pseudo_media = MediaItem(
+                kind=kind,
+                file_size=file_size or 0,
+                width=width,
+                height=height,
+                duration_seconds=duration_seconds,
+                original_filename=original_filename or "",
+                owner_id=0,
+                storage_path="",
+                mime_type="application/octet-stream",
+                sha256="",
+            )
+            load_units = estimate_media_load_units(pseudo_media)
+            kind_bias = {"image": 0, "gif": 1, "video": 2}.get(kind.value, 3)
+            timestamp_bias = int(created_at.timestamp()) if created_at else 0
+            priority = (load_units, kind_bias, attempts or 0, timestamp_bias)
+        return QueuedJob(priority=priority, sequence=next(self._enqueue_counter), job_id=job_id)
 
     def desired_worker_count(self) -> int:
         with self._lock:
@@ -120,7 +218,7 @@ class ProcessingCoordinator:
                     if job_id in self._queued_job_ids:
                         continue
                     self._queued_job_ids.add(job_id)
-                self._queue.put(job_id)
+                self._queue.put(self._build_queued_job(job_id))
                 added += 1
             return added
         finally:
@@ -164,10 +262,11 @@ class ProcessingCoordinator:
                 stop_event.wait(0.5)
                 continue
             try:
-                job_id = self._queue.get(timeout=1.0)
+                queued_job = self._queue.get(timeout=1.0)
             except queue.Empty:
                 self._sync_queued_jobs()
                 continue
+            job_id = queued_job.job_id
             try:
                 self._process(job_id, stop_event)
             finally:
@@ -175,31 +274,40 @@ class ProcessingCoordinator:
                 with self._lock:
                     self._queued_job_ids.discard(job_id)
 
-    def _acquire_processing_slot(self, stop_event: threading.Event) -> bool:
+    def _acquire_processing_slot(self, media: MediaItem, stop_event: threading.Event) -> tuple[bool, int]:
+        load_units = estimate_media_load_units(media)
+        heavy_threshold = max(1, int(get_runtime_value("processing_heavy_job_threshold")))
+        is_heavy = load_units >= heavy_threshold
         while True:
             if stop_event.is_set():
-                return False
+                return False, load_units
             if self._processing_paused():
                 stop_event.wait(0.5)
                 continue
-            limit = max(1, int(get_runtime_value("ai_proxy_max_concurrency")))
+            load_budget = max(1, int(get_runtime_value("processing_load_budget")))
+            max_heavy_jobs = max(1, int(get_runtime_value("processing_max_heavy_jobs")))
             with self._processing_slots:
-                if self._active_processing < limit:
-                    self._active_processing += 1
-                    return True
+                can_fit_budget = self._active_load + load_units <= load_budget
+                can_fit_heavy = not is_heavy or self._active_heavy_jobs < max_heavy_jobs
+                if can_fit_budget and can_fit_heavy:
+                    self._active_load += load_units
+                    if is_heavy:
+                        self._active_heavy_jobs += 1
+                    return True, load_units
                 self._processing_slots.wait(timeout=0.5)
 
-    def _release_processing_slot(self) -> None:
+    def _release_processing_slot(self, load_units: int) -> None:
         with self._processing_slots:
-            self._active_processing = max(0, self._active_processing - 1)
+            self._active_load = max(0, self._active_load - load_units)
+            heavy_threshold = max(1, int(get_runtime_value("processing_heavy_job_threshold")))
+            if load_units >= heavy_threshold:
+                self._active_heavy_jobs = max(0, self._active_heavy_jobs - 1)
             self._processing_slots.notify_all()
 
     def _process(self, job_id: str, stop_event: threading.Event) -> None:
-        if not self._acquire_processing_slot(stop_event):
-            self.enqueue(job_id)
-            return
-
         session = SessionLocal()
+        load_units = 1
+        acquired_slot = False
         try:
             job = session.get(ProcessingJob, job_id)
             if job is None or job.status == JobStatus.complete:
@@ -207,6 +315,12 @@ class ProcessingCoordinator:
             media = session.get(MediaItem, job.media_id)
             if media is None:
                 return
+
+            acquired, load_units = self._acquire_processing_slot(media, stop_event)
+            if not acquired:
+                self.enqueue(job_id)
+                return
+            acquired_slot = True
 
             job.status = JobStatus.processing
             job.started_at = datetime.now(timezone.utc)
@@ -285,7 +399,8 @@ class ProcessingCoordinator:
             audit("media.index_failed", f"Index failed: {exc}", severity="error", context={"job_id": job_id})
         finally:
             session.close()
-            self._release_processing_slot()
+            if acquired_slot:
+                self._release_processing_slot(load_units)
 
     def _apply_analysis(self, session, media: MediaItem, analysis: dict) -> None:
         session.query(MediaTag).filter(MediaTag.media_id == media.id).delete()

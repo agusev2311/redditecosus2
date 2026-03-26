@@ -5,7 +5,7 @@ import threading
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import DeclarativeBase, scoped_session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
 
 from app.config import settings
 
@@ -19,9 +19,8 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     future=True,
 )
-SessionLocal = scoped_session(
-    sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False),
-)
+SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+SessionLocal = scoped_session(SessionFactory)
 _schema_lock = threading.Lock()
 
 
@@ -45,3 +44,7 @@ def is_missing_table_error(exc: Exception) -> bool:
 def ensure_database_schema() -> None:
     with _schema_lock:
         init_db()
+
+
+def new_session() -> Session:
+    return SessionFactory()

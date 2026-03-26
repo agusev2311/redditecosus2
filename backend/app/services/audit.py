@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 
+from sqlalchemy.exc import OperationalError
+
 from app.config import settings
-from app.db.session import SessionLocal
+from app.db.session import new_session
 from app.models import AuditLog
 
 
@@ -36,7 +38,7 @@ def audit(
     context: dict | None = None,
 ) -> None:
     logger.log(getattr(logging, severity.upper(), logging.INFO), "%s | %s", event_type, message)
-    session = SessionLocal()
+    session = new_session()
     try:
         session.add(
             AuditLog(
@@ -49,6 +51,7 @@ def audit(
             )
         )
         session.commit()
+    except OperationalError:
+        session.rollback()
     finally:
         session.close()
-

@@ -131,7 +131,18 @@ export interface BackupItem {
 
 export interface UploadResponse {
   items: MediaItem[]
-  archives: Array<{ archive_id: string; media_ids: string[] }>
+  archives: Array<{
+    archive_id: string
+    filename: string
+    status: string
+    media_ids: string[]
+    job_ids: string[]
+    scanned_files: number
+    supported_files: number
+    unsupported_files: number
+    top_unsupported_extensions: Array<[string, number]>
+    artifacts_cleaned: boolean
+  }>
 }
 
 export interface RetryFailedJobsResponse {

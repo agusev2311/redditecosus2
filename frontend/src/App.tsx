@@ -22,7 +22,7 @@ import {
   updateRuntimeConfig,
   uploadFiles,
 } from './api'
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, RuntimeConfigItem, SafetyRating, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, RuntimeConfigItem, SafetyRating, UploadResponse, User } from './types'
 
 type WorkspaceTab = 'library' | 'processing' | 'backups' | 'activity' | 'admin'
 
@@ -108,6 +108,29 @@ function trimText(value: string | null | undefined, fallback: string, max = 180)
   const text = (value ?? '').trim()
   if (!text) return fallback
   return text.length <= max ? text : `${text.slice(0, max).trimEnd()}...`
+}
+
+function buildUploadNotice(result: UploadResponse) {
+  const directCount = result.items.length
+  const archiveCount = result.archives.length
+  const importedFromArchives = result.archives.reduce((sum, archive) => sum + archive.media_ids.length, 0)
+  const emptyArchives = result.archives.filter((archive) => archive.media_ids.length === 0)
+
+  const parts: string[] = []
+  if (directCount) parts.push(`напрямую загружено ${directCount}`)
+  if (archiveCount) parts.push(`архивов ${archiveCount}`)
+  if (importedFromArchives) parts.push(`из архивов импортировано ${importedFromArchives}`)
+  if (!parts.length) parts.push('Загрузка завершена')
+
+  if (emptyArchives.length) {
+    const archive = emptyArchives[0]
+    const unsupportedHint = archive.top_unsupported_extensions.length
+      ? ` Чаще всего пропущены: ${archive.top_unsupported_extensions.map(([ext, count]) => `${ext} x${count}`).join(', ')}.`
+      : ''
+    parts.push(`в архиве ${archive.filename} не найдено поддерживаемых медиафайлов.${unsupportedHint}`)
+  }
+
+  return parts.join(' · ')
 }
 
 function primaryDescription(item: MediaItem) {
@@ -357,10 +380,12 @@ function App() {
   const handleFiles = async (files: File[]) => {
     if (!token || files.length === 0) return
     setError('')
+    setNotice('')
     setUploading(true)
     setUploadProgress(0)
     try {
-      await uploadFiles(token, files, setUploadProgress)
+      const result = await uploadFiles(token, files, setUploadProgress)
+      setNotice(buildUploadNotice(result))
       setRefreshNonce((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Upload failed')

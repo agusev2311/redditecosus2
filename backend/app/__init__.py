@@ -7,6 +7,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from app.api import register_blueprints
 from app.config import settings
 from app.db.session import init_db
+from app.services.archive import cleanup_archive_staging
 from app.services.audit import configure_logging
 from app.services.processing import get_processing_coordinator
 from app.services.storage import ensure_storage_layout
@@ -24,6 +25,7 @@ def create_app() -> Flask:
     ensure_storage_layout()
     configure_logging()
     init_db()
+    cleanup_archive_staging()
     register_blueprints(app)
     should_boot_workers = settings.env != "development" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if settings.enable_processing and should_boot_workers:

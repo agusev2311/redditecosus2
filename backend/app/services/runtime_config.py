@@ -5,7 +5,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.db.session import SessionLocal
+from app.db.session import new_session
 from app.models import AppConfigEntry
 
 
@@ -175,7 +175,7 @@ def _coerce_value(spec: RuntimeConfigSpec, raw: Any) -> Any:
 
 
 def get_runtime_config_map() -> dict[str, Any]:
-    session = SessionLocal()
+    session = new_session()
     try:
         rows = session.query(AppConfigEntry).all()
         values = {row.key: row.value for row in rows}
@@ -223,7 +223,7 @@ def update_runtime_config_values(updates: dict[str, Any], *, updated_by_id: int 
             raise ValueError(f"Unknown config key: {key}")
         normalized[key] = _coerce_value(spec, raw)
 
-    session = SessionLocal()
+    session = new_session()
     try:
         for key, value in normalized.items():
             row = session.get(AppConfigEntry, key)

@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import func
 
 from app.config import _normalize_ai_proxy_base_url, settings
-from app.db.session import SessionLocal
+from app.db.session import new_session
 from app.models import MediaItem, MediaTag, Tag, TagKind
 from app.services.analysis_enrichment import enrich_analysis_tags
 from app.services.media_probe import extract_frames_for_model, probe_media, technical_tags
@@ -127,7 +127,7 @@ class AIProxyService:
                 self._concurrency_condition.notify_all()
 
     def _existing_tags_for_owner(self, owner_id: int, limit: int) -> dict[str, list[str]]:
-        session = SessionLocal()
+        session = new_session()
         try:
             rows = (
                 session.query(Tag.name, Tag.kind, func.count(MediaTag.id).label("usage_count"))

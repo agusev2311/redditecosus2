@@ -3,13 +3,16 @@ from __future__ import annotations
 import shutil
 import tarfile
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 import py7zr
 import rarfile
+from sqlalchemy import update
 from werkzeug.datastructures import FileStorage
 
 from app.config import settings
+from app.db.session import SessionLocal
 from app.models import ArchiveImport
 from app.services.audit import audit
 from app.services.media_probe import detect_media_kind
@@ -76,6 +79,30 @@ def extract_archive(archive_path: Path, output_dir: Path) -> None:
         shutil.unpack_archive(str(archive_path), str(output_dir))
 
 
+def _cleanup_import_artifacts(archive_path: Path, extracted_dir: Path) -> None:
+    archive_path.unlink(missing_ok=True)
+    shutil.rmtree(extracted_dir, ignore_errors=True)
+    archive_root = archive_path.parent
+    if archive_root.exists() and not any(archive_root.iterdir()):
+        archive_root.rmdir()
+    owner_root = archive_root.parent
+    if owner_root.exists() and not any(owner_root.iterdir()):
+        owner_root.rmdir()
+
+
+def cleanup_archive_staging() -> None:
+    if settings.archive_dir.exists():
+        shutil.rmtree(settings.archive_dir, ignore_errors=True)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+
+    session = SessionLocal()
+    try:
+        session.execute(update(ArchiveImport).values(archive_path="", extracted_path=""))
+        session.commit()
+    finally:
+        session.close()
+
+
 def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: bool = True) -> dict:
     archive = ArchiveImport(
         owner_id=owner_id,
@@ -98,11 +125,17 @@ def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: boo
 
     created_items: list[str] = []
     created_jobs: list[str] = []
+    scanned_files = 0
+    supported_files = 0
+    unsupported_extensions: Counter[str] = Counter()
     for candidate in extracted_dir.rglob("*"):
         if not candidate.is_file():
             continue
+        scanned_files += 1
         if detect_media_kind(candidate.name) is None:
+            unsupported_extensions[candidate.suffix.lower() or "[no_extension]"] += 1
             continue
+        supported_files += 1
         relative_path = str(candidate.relative_to(extracted_dir))
         item = import_media_file(
             session,
@@ -117,15 +150,36 @@ def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: boo
             job = queue_media_for_processing(session, item)
             created_jobs.append(job.id)
 
-    archive.archive_path = str(archive_path.relative_to(settings.storage_root))
-    archive.extracted_path = str(extracted_dir.relative_to(settings.storage_root))
-    archive.file_count = len(created_items)
-    archive.status = "complete"
+    imported_media_ids = list(dict.fromkeys(created_items))
+    archive.file_count = len(imported_media_ids)
+    archive.status = "complete" if imported_media_ids else "empty"
+    archive.archive_path = ""
+    archive.extracted_path = ""
+    _cleanup_import_artifacts(archive_path, extracted_dir)
     session.flush()
     audit(
         "archive.ingested",
         f"Ingested archive {archive.original_filename}",
         owner_id=owner_id,
-        context={"archive_id": archive.id, "media_count": len(created_items)},
+        context={
+            "archive_id": archive.id,
+            "media_count": len(imported_media_ids),
+            "scanned_files": scanned_files,
+            "supported_files": supported_files,
+            "unsupported_files": max(scanned_files - supported_files, 0),
+            "status": archive.status,
+            "top_unsupported_extensions": unsupported_extensions.most_common(8),
+        },
     )
-    return {"archive_id": archive.id, "media_ids": created_items, "job_ids": created_jobs}
+    return {
+        "archive_id": archive.id,
+        "filename": archive.original_filename,
+        "status": archive.status,
+        "media_ids": imported_media_ids,
+        "job_ids": created_jobs,
+        "scanned_files": scanned_files,
+        "supported_files": supported_files,
+        "unsupported_files": max(scanned_files - supported_files, 0),
+        "top_unsupported_extensions": [[extension, count] for extension, count in unsupported_extensions.most_common(8)],
+        "artifacts_cleaned": True,
+    }

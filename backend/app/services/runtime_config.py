@@ -104,6 +104,15 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
         min_value=160,
         max_value=4096,
     ),
+    "analysis_image_max_dimension": RuntimeConfigSpec(
+        key="analysis_image_max_dimension",
+        label="Analysis image max dimension",
+        description="Максимальный размер статичной картинки для AI-анализa. 0 = отправлять без уменьшения.",
+        kind="integer",
+        default=settings.analysis_image_max_dimension,
+        min_value=0,
+        max_value=16384,
+    ),
     "backup_chunk_mb": RuntimeConfigSpec(
         key="backup_chunk_mb",
         label="Backup chunk MB",

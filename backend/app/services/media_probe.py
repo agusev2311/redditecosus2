@@ -154,12 +154,18 @@ def _image_to_data_url(image: Image.Image, caption: str) -> FramePayload:
     return FramePayload("image/jpeg", f"data:image/jpeg;base64,{encoded}", caption)
 
 
+def _apply_analysis_resize(image: Image.Image, max_dimension: int) -> Image.Image:
+    if max_dimension > 0:
+        image.thumbnail((max_dimension, max_dimension))
+    return image
+
+
 def extract_frames_for_model(path: Path, kind: MediaKind, max_frames: int = 6) -> list[FramePayload]:
     frames: list[FramePayload] = []
     if kind == MediaKind.image:
         with Image.open(path) as image:
             frame = ImageOps.exif_transpose(image.convert("RGB"))
-            frame.thumbnail((1600, 1600))
+            frame = _apply_analysis_resize(frame, int(get_runtime_value("analysis_image_max_dimension")))
             frames.append(_image_to_data_url(frame, "image"))
         return frames
 

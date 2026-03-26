@@ -39,6 +39,33 @@ npm run dev
 
 ### Что подготовить
 
+Самый быстрый способ:
+
+```bash
+chmod +x ./deploy/setup.sh
+./deploy/setup.sh \
+  --domain 95.62.49.206 \
+  --ai-proxy-base-url https://95.62.49.206:8317/v1 \
+  --ai-proxy-api-key sk-... \
+  --telegram-bot-token 123:abc \
+  --telegram-backup-chat-id 1133611562 \
+  --generate-self-signed \
+  --up
+```
+
+Скрипт сам:
+
+- создаст корневой `.env`
+- создаст `backend/.env`
+- сгенерирует `APP_SECRET_KEY`
+- при необходимости выпустит self-signed сертификаты
+- подготовит папки проекта
+- поднимет `docker compose`, если передан `--up`
+
+Если `.env` уже существуют, скрипт попросит `--force` и сделает backup перед перезаписью.
+
+### Ручной сценарий
+
 1. Скопируйте `backend/.env.example` в `backend/.env` и заполните как минимум:
    - `APP_SECRET_KEY`
    - `AI_PROXY_API_KEY`

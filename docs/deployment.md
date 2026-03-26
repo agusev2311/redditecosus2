@@ -6,6 +6,22 @@
 - `frontend`: Nginx serving the built SPA and proxying `/api/*` to `backend`.
 - `telegram-bot`: separate long-running bot process sharing the same app data.
 
+## Automated setup
+
+For a fresh Linux host, prefer the helper script:
+
+```bash
+chmod +x ./deploy/setup.sh
+./deploy/setup.sh \
+  --domain 95.62.49.206 \
+  --ai-proxy-base-url https://95.62.49.206:8317/v1 \
+  --ai-proxy-api-key sk-... \
+  --generate-self-signed \
+  --up
+```
+
+It writes the root `.env`, writes `backend/.env`, generates `APP_SECRET_KEY`, optionally creates self-signed TLS certs, and can run `docker compose up -d --build`.
+
 ## Persistent state
 
 All mutable state is redirected into `APP_DATA_ROOT`:

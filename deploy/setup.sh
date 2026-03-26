@@ -37,7 +37,10 @@ RUN_DOCKER_UP="false"
 usage() {
   cat <<'EOF'
 Usage:
+  ./deploy/setup.sh
   ./deploy/setup.sh --domain <domain-or-ip> --ai-proxy-base-url <url> --ai-proxy-api-key <key> [options]
+
+When started without required arguments in an interactive terminal, the script asks for them step by step.
 
 Required:
   --domain VALUE                    Public domain or IP for the site.
@@ -84,6 +87,66 @@ log() {
 fail() {
   printf '[setup] error: %s\n' "$*" >&2
   exit 1
+}
+
+is_interactive() {
+  [[ -t 0 && -t 1 ]]
+}
+
+prompt_text() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local secret="${3:-false}"
+  local answer=""
+
+  while true; do
+    if [[ -n "$default_value" ]]; then
+      if [[ "$secret" == "true" ]]; then
+        printf '[setup] %s [%s]: ' "$prompt" 'hidden'
+        read -r -s answer
+        printf '\n'
+      else
+        read -r -p "[setup] $prompt [$default_value]: " answer
+      fi
+    else
+      if [[ "$secret" == "true" ]]; then
+        printf '[setup] %s: ' "$prompt"
+        read -r -s answer
+        printf '\n'
+      else
+        read -r -p "[setup] $prompt: " answer
+      fi
+    fi
+
+    if [[ -n "$answer" ]]; then
+      printf '%s\n' "$answer"
+      return
+    fi
+    if [[ -n "$default_value" ]]; then
+      printf '%s\n' "$default_value"
+      return
+    fi
+  done
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default_value="${2:-y}"
+  local suffix='[Y/n]'
+  local answer=""
+
+  if [[ "$default_value" == "n" ]]; then
+    suffix='[y/N]'
+  fi
+
+  while true; do
+    read -r -p "[setup] $prompt $suffix: " answer
+    answer="${answer:-$default_value}"
+    case "${answer,,}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+    esac
+  done
 }
 
 require_command() {
@@ -242,6 +305,68 @@ run_docker_compose() {
   (cd "$ROOT_DIR" && docker compose up -d --build)
 }
 
+prompt_for_missing_values() {
+  log "Interactive setup mode"
+
+  [[ -n "$DOMAIN" ]] || DOMAIN="$(prompt_text 'Public domain or IP for the site')"
+  [[ -n "$AI_PROXY_BASE_URL" ]] || AI_PROXY_BASE_URL="$(prompt_text 'AI proxy base URL' 'https://127.0.0.1:8317/v1')"
+  [[ -n "$AI_PROXY_API_KEY" ]] || AI_PROXY_API_KEY="$(prompt_text 'AI proxy API key' '' 'true')"
+
+  APP_DEFAULT_TIMEZONE="$(prompt_text 'Default timezone' "$APP_DEFAULT_TIMEZONE")"
+  APP_PROCESSING_WORKERS="$(prompt_text 'Processing workers' "$APP_PROCESSING_WORKERS")"
+
+  if [[ -z "$APP_SECRET_KEY" ]]; then
+    if prompt_yes_no 'Generate APP_SECRET_KEY automatically?' 'y'; then
+      APP_SECRET_KEY="$(generate_secret)"
+      log "Generated APP_SECRET_KEY"
+    else
+      APP_SECRET_KEY="$(prompt_text 'APP_SECRET_KEY' '' 'true')"
+    fi
+  fi
+
+  if [[ "$GENERATE_SELF_SIGNED" == "auto" ]]; then
+    if prompt_yes_no 'Generate self-signed TLS certificates in deploy/certs?' 'y'; then
+      GENERATE_SELF_SIGNED="true"
+      TLS_CERT_PATH="./deploy/certs/server.crt"
+      TLS_KEY_PATH="./deploy/certs/server.key"
+      EXTRA_CA_CERTS_PATH="./deploy/certs"
+    else
+      GENERATE_SELF_SIGNED="false"
+      TLS_CERT_PATH="$(prompt_text 'Path to TLS certificate' "$TLS_CERT_PATH")"
+      TLS_KEY_PATH="$(prompt_text 'Path to TLS key' "$TLS_KEY_PATH")"
+      EXTRA_CA_CERTS_PATH="$(prompt_text 'Path to directory with CA/cert files to mount' "$EXTRA_CA_CERTS_PATH")"
+    fi
+  fi
+
+  if [[ "$AI_PROXY_VERIFY_TLS" == "true" && -z "$AI_PROXY_CA_SOURCE" ]]; then
+    if prompt_yes_no 'Does the AI proxy use a self-signed TLS certificate?' 'n'; then
+      if prompt_yes_no 'Disable AI proxy TLS verification?' 'y'; then
+        AI_PROXY_VERIFY_TLS="false"
+      else
+        AI_PROXY_CA_SOURCE="$(prompt_text 'Path to AI proxy CA bundle file')"
+      fi
+    fi
+  fi
+
+  if prompt_yes_no 'Configure Telegram bot now?' 'n'; then
+    [[ -n "$TELEGRAM_BOT_TOKEN" ]] || TELEGRAM_BOT_TOKEN="$(prompt_text 'Telegram bot token' '' 'true')"
+    [[ -n "$TELEGRAM_BACKUP_CHAT_ID" ]] || TELEGRAM_BACKUP_CHAT_ID="$(prompt_text 'Telegram backup chat/user id')"
+    TELEGRAM_INLINE_BASE_URL="$(prompt_text 'Telegram inline base URL' "${TELEGRAM_INLINE_BASE_URL:-https://$DOMAIN}")"
+  fi
+
+  if [[ -f "$ROOT_ENV" || -f "$BACKEND_ENV" ]] && [[ "$FORCE_WRITE" != "true" ]]; then
+    if prompt_yes_no 'Existing .env files found. Overwrite them after creating backups?' 'n'; then
+      FORCE_WRITE="true"
+    fi
+  fi
+
+  if [[ "$RUN_DOCKER_UP" != "true" ]]; then
+    if prompt_yes_no 'Run docker compose up -d --build after writing config?' 'y'; then
+      RUN_DOCKER_UP="true"
+    fi
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain)
@@ -337,6 +462,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$DOMAIN" || -z "$AI_PROXY_BASE_URL" || -z "$AI_PROXY_API_KEY" ]]; then
+  if is_interactive; then
+    prompt_for_missing_values
+  fi
+fi
 
 [[ -n "$DOMAIN" ]] || fail "--domain is required"
 [[ -n "$AI_PROXY_BASE_URL" ]] || fail "--ai-proxy-base-url is required"

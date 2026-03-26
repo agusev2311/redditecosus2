@@ -43,6 +43,15 @@ npm run dev
 
 ```bash
 chmod +x ./deploy/setup.sh
+./deploy/setup.sh
+```
+
+Теперь скрипт можно запустить вообще без аргументов: в интерактивном режиме он сам по шагам спросит домен, proxy, ключ, сертификаты, Telegram и запуск Docker.
+
+Или сразу передать все значения одной командой:
+
+```bash
+chmod +x ./deploy/setup.sh
 ./deploy/setup.sh \
   --domain 95.62.49.206 \
   --ai-proxy-base-url https://95.62.49.206:8317/v1 \

@@ -6,6 +6,15 @@
 
 ```bash
 chmod +x ./deploy/setup.sh
+./deploy/setup.sh
+```
+
+Без аргументов скрипт переходит в интерактивный режим и по очереди спрашивает все нужные значения.
+
+Можно и сразу одной командой:
+
+```bash
+chmod +x ./deploy/setup.sh
 ./deploy/setup.sh \
   --domain 95.62.49.206 \
   --ai-proxy-base-url https://95.62.49.206:8317/v1 \

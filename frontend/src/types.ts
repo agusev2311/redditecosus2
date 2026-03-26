@@ -115,6 +115,27 @@ export interface AIProxySleepState {
   sleep_hours: number
 }
 
+export interface MemoryGuardState {
+  active: boolean
+  triggered_at?: string | null
+  reason?: string | null
+  snapshot?: string | null
+  pause_available_mb: number
+  resume_available_mb: number
+  memory: {
+    source: string
+    total_bytes: number
+    available_bytes: number
+    used_bytes: number
+    limit_bytes: number
+    raw_used_bytes: number
+    available_mb: number
+    used_mb: number
+    total_mb: number
+    usage_percent: number
+  }
+}
+
 export interface OverviewPayload {
   counts: {
     media: number
@@ -141,6 +162,7 @@ export interface OverviewPayload {
   }
   processing_stats: ProcessingStats
   ai_proxy_sleep: AIProxySleepState
+  memory_guard: MemoryGuardState
   recent_logs: LogItem[]
   prompt_preview: string
 }

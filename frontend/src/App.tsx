@@ -80,6 +80,26 @@ const emptyOverview: OverviewPayload = {
     monitored_status_codes: [],
     sleep_hours: 3,
   },
+  memory_guard: {
+    active: false,
+    triggered_at: null,
+    reason: null,
+    snapshot: null,
+    pause_available_mb: 256,
+    resume_available_mb: 512,
+    memory: {
+      source: 'unknown',
+      total_bytes: 0,
+      available_bytes: 0,
+      used_bytes: 0,
+      limit_bytes: 0,
+      raw_used_bytes: 0,
+      available_mb: 0,
+      used_mb: 0,
+      total_mb: 0,
+      usage_percent: 0,
+    },
+  },
   recent_logs: [],
   prompt_preview: '',
 }
@@ -805,6 +825,7 @@ function App() {
 
   const processingStats = overview.processing_stats ?? emptyProcessingStats
   const aiProxySleep = overview.ai_proxy_sleep ?? emptyOverview.ai_proxy_sleep
+  const memoryGuard = overview.memory_guard ?? emptyOverview.memory_guard
   const queueCounts = {
     queued: processingStats.queued,
     processing: processingStats.processing,
@@ -1308,6 +1329,16 @@ function App() {
                     {resumingAIProxy ? 'Возобновляем...' : 'Возобновить сейчас'}
                   </button>
                 </div>
+              </div>
+              <div className="note-block">
+                <span>Memory guard</span>
+                <p>
+                  {memoryGuard.active
+                    ? `Processor поставлен на паузу из-за памяти. Доступно ${formatMetric(memoryGuard.memory.available_mb)} MB из ${formatMetric(memoryGuard.memory.total_mb)} MB. Автовозврат после подъема выше ${memoryGuard.resume_available_mb} MB.`
+                    : `Сейчас memory guard не активен. Пауза включится ниже ${memoryGuard.pause_available_mb} MB доступной памяти, автопродолжение выше ${memoryGuard.resume_available_mb} MB.`}
+                </p>
+                {memoryGuard.reason ? <small className="muted">{trimText(memoryGuard.reason, '', 220)}</small> : null}
+                {memoryGuard.snapshot ? <small className="muted">{trimText(memoryGuard.snapshot, '', 220)}</small> : null}
               </div>
               <div className="button-row">
                 <button className="secondary-button" type="button" onClick={() => void handleReindexAllMedia()} disabled={reindexingAll}>

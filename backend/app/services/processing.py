@@ -12,6 +12,7 @@ from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, Processing
 from app.services.ai_limit_guard import is_ai_proxy_sleep_active
 from app.services.ai_proxy import AIProxyLimitCooldownError, ai_proxy_service
 from app.services.audit import audit
+from app.services.memory_guard import evaluate_processing_memory_guard
 from app.services.runtime_config import get_runtime_value
 from app.services.storage import queue_media_for_processing
 from app.services.tag_catalog import get_tag_description_coordinator
@@ -164,7 +165,7 @@ class ProcessingCoordinator:
             self._processing_slots.notify_all()
 
     def _processing_paused(self) -> bool:
-        return bool(get_runtime_value("processing_paused")) or is_ai_proxy_sleep_active()
+        return bool(get_runtime_value("processing_paused")) or is_ai_proxy_sleep_active() or bool(evaluate_processing_memory_guard()["active"])
 
     def set_desired_workers(self, count: int) -> int:
         target = max(1, int(count))

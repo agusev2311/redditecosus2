@@ -6,6 +6,7 @@ from sqlalchemy import or_
 from app.db.session import SessionLocal
 from app.models import AuditLog, MediaItem, MediaKind, ProcessingJob, ProcessingStatus, SafetyRating, User
 from app.services.ai_limit_guard import get_ai_proxy_sleep_state
+from app.services.memory_guard import get_processing_memory_guard_state
 from app.services.ai_proxy import ANALYSIS_PROMPT
 from app.services.disk_usage import summarize_disk_usage
 from app.services.processing_stats import build_processing_stats, recent_logs_query_for_user
@@ -70,6 +71,7 @@ def overview():
                 },
                 "processing_stats": build_processing_stats(session, media_query, jobs_query, logs_query),
                 "ai_proxy_sleep": get_ai_proxy_sleep_state(),
+                "memory_guard": get_processing_memory_guard_state(),
                 "recent_logs": [
                     {
                         "id": row.id,

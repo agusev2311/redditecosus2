@@ -21,6 +21,14 @@ import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload,
 
 type WorkspaceTab = 'library' | 'processing' | 'backups' | 'activity' | 'admin'
 
+type TabDefinition = {
+  id: WorkspaceTab
+  short: string
+  label: string
+  title: string
+  description: string
+}
+
 const TOKEN_KEY = 're2_token'
 const emptyProcessingStats: ProcessingStats = {
   workers: 0,
@@ -104,9 +112,9 @@ function ratingLabel(rating: SafetyRating) {
 function StatCard({ label, value, hint, tone = 'default' }: { label: string; value: string | number; hint?: string; tone?: 'default' | 'accent' | 'success' | 'danger' }) {
   return (
     <article className={`stat-card tone-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {hint ? <small>{hint}</small> : null}
+      <span className="stat-label">{label}</span>
+      <strong className="stat-value">{value}</strong>
+      {hint ? <small className="stat-hint">{hint}</small> : null}
     </article>
   )
 }
@@ -383,12 +391,12 @@ function App() {
   const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')
   const topTags = Array.from(tagCountMap.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)
   const queueFocus = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 8)
-  const tabs = [
-    { id: 'library' as const, short: 'LB', label: 'Library', description: 'Поиск, загрузка и просмотр' },
-    { id: 'processing' as const, short: 'AI', label: 'Processing', description: 'Очередь и производительность' },
-    { id: 'backups' as const, short: 'BK', label: 'Backups', description: 'Telegram backup pipeline' },
-    { id: 'activity' as const, short: 'LG', label: 'Activity', description: 'Логи и сигналы' },
-    ...(currentUser?.role === 'admin' ? [{ id: 'admin' as const, short: 'AD', label: 'Admin', description: 'Диск, пользователи и роли' }] : []),
+  const tabs: TabDefinition[] = [
+    { id: 'library', short: 'LB', label: 'Библиотека', title: 'Медиатека', description: 'Поиск, загрузка и просмотр файлов' },
+    { id: 'processing', short: 'AI', label: 'Обработка', title: 'AI-очередь', description: 'Скорость, backlog и проблемные задания' },
+    { id: 'backups', short: 'BK', label: 'Бэкапы', title: 'Резервные копии', description: 'Создание и отправка частей в Telegram' },
+    { id: 'activity', short: 'LG', label: 'Логи', title: 'События системы', description: 'Сигналы, ошибки и быстрый переход по тегам' },
+    ...(currentUser?.role === 'admin' ? [{ id: 'admin' as const, short: 'AD', label: 'Админ', title: 'Управление', description: 'Диск, пользователи и права доступа' }] : []),
   ]
   const currentTab = tabs.find((tab) => tab.id === activeTab) ?? tabs[0]
 
@@ -419,7 +427,13 @@ function App() {
         <div className="sidebar-top">
           <div className="brand-lockup">
             <div className="brand-mark">RE2</div>
-            {!sidebarCollapsed ? <div className="brand-copy"><strong>Reddit Ecosystem 2</strong><small>{currentUser.username} · {roleLabel(currentUser)}</small></div> : null}
+            {!sidebarCollapsed ? (
+              <div className="brand-copy">
+                <strong>Reddit Ecosystem 2</strong>
+                <small>{currentUser.username}</small>
+                <small>{roleLabel(currentUser)}</small>
+              </div>
+            ) : null}
           </div>
           <div className="sidebar-controls">
             <button className="icon-button desktop-only" type="button" onClick={() => setSidebarCollapsed((value) => !value)}>{sidebarCollapsed ? '>' : '<'}</button>
@@ -428,7 +442,7 @@ function App() {
         </div>
         <div className="sidebar-summary">
           <StatCard label="Всего медиа" value={overview.counts.media} hint={`${kindCounts.image} img · ${kindCounts.gif} gif · ${kindCounts.video} video`} tone="accent" />
-          {!sidebarCollapsed ? <StatCard label="AI coverage" value={`${aiCoverage}%`} hint={`queue ${backlogCount} · nsfw ${nsfwMedia}`} /> : null}
+          {!sidebarCollapsed ? <StatCard label="AI готово" value={`${aiCoverage}%`} hint={`queue ${backlogCount} · nsfw ${nsfwMedia}`} /> : null}
         </div>
         <nav className="sidebar-nav">
           {tabs.map((tab) => <SidebarTab key={tab.id} active={tab.id === activeTab} short={tab.short} label={tab.label} description={tab.description} collapsed={sidebarCollapsed} onClick={() => { setActiveTab(tab.id); setMobileSidebarOpen(false) }} />)}
@@ -442,7 +456,11 @@ function App() {
         <header className="workspace-header glass-panel">
           <div className="workspace-title">
             <button className="icon-button mobile-only" type="button" onClick={() => setMobileSidebarOpen(true)}>menu</button>
-            <div><span>{currentTab.label}</span><h1>{currentTab.description}</h1></div>
+            <div className="workspace-title-copy">
+              <span>{currentTab.label}</span>
+              <h1>{currentTab.title}</h1>
+              <p className="workspace-subtitle">{currentTab.description}</p>
+            </div>
           </div>
           <div className="workspace-pills"><span className="status-pill">{overview.counts.media} media</span><span className="status-pill">AI {aiCoverage}%</span><span className="status-pill">queue {backlogCount}</span></div>
         </header>
@@ -452,12 +470,12 @@ function App() {
             <section className="hero-grid">
               <article className="glass-panel hero-panel">
                 <div className="panel-head">
-                  <div><span>Overview</span><h2>Большая библиотека под быстрый поиск</h2></div>
+                  <div><span>Обзор</span><h2>Большая библиотека под быстрый поиск</h2></div>
                 </div>
                 <div className="stat-grid">
                   <StatCard label="Всего" value={overview.counts.media} hint="в текущей библиотеке" tone="accent" />
-                  <StatCard label="Indexed" value={`${aiCoverage}%`} hint={`${completedMedia} файлов готовы`} tone="success" />
-                  <StatCard label="Backlog" value={backlogCount} hint={`queued ${queueCounts.queued} · processing ${queueCounts.processing}`} />
+                  <StatCard label="AI готово" value={`${aiCoverage}%`} hint={`${completedMedia} файлов готовы`} tone="success" />
+                  <StatCard label="Очередь" value={backlogCount} hint={`queued ${queueCounts.queued} · processing ${queueCounts.processing}`} />
                   <StatCard label="NSFW" value={nsfwMedia} hint="помечено модерацией" tone="danger" />
                 </div>
                 <div className="chip-row spacious">
@@ -474,7 +492,7 @@ function App() {
                 onDrop={handleDrop}
               >
                 <div className="panel-head">
-                  <div><span>Upload</span><h2>Загрузка медиа и архивов</h2></div>
+                  <div><span>Загрузка</span><h2>Загрузка медиа и архивов</h2></div>
                   <label className="primary-button file-button">Выбрать<input type="file" multiple onChange={handlePick} /></label>
                 </div>
                 <p className="lede">Поддерживаются изображения, GIF, видео и архивы с вложенными папками. После загрузки файлы сразу становятся в AI-очередь.</p>
@@ -489,7 +507,7 @@ function App() {
               </section>
             </section>
             <section className="glass-panel filter-panel">
-              <div className="panel-head"><div><span>Filters</span><h2>Поиск по памяти, тегам и AI-описанию</h2></div></div>
+              <div className="panel-head"><div><span>Фильтры</span><h2>Поиск по памяти, тегам и AI-описанию</h2></div></div>
               <div className="filter-grid">
                 <label className="filter-span-2">Запрос<input value={searchInput} onChange={(event) => startTransition(() => setSearchInput(event.target.value))} placeholder="protogen, meme, red room, vertical video..." /></label>
                 <label>Тип<select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="">Все</option><option value="image">Изображения</option><option value="gif">GIF</option><option value="video">Видео</option></select></label>
@@ -499,7 +517,7 @@ function App() {
             </section>
             <section className="glass-panel gallery-panel">
               <div className="panel-head">
-                <div><span>Library</span><h2>{media.length} результатов</h2></div>
+                <div><span>Медиатека</span><h2>{media.length} результатов</h2></div>
                 <div className="chip-row"><span className="tag-chip">queued {queueCounts.queued}</span><span className="tag-chip">processing {queueCounts.processing}</span><span className="tag-chip">complete {queueCounts.complete}</span><span className="tag-chip">failed {queueCounts.failed}</span></div>
               </div>
               <div className="gallery-grid">
@@ -511,7 +529,7 @@ function App() {
         {activeTab === 'processing' ? (
           <div className="tab-stack">
             <section className="glass-panel metrics-panel">
-              <div className="panel-head"><div><span>AI Metrics</span><h2>Скорость и качество обработки</h2></div></div>
+              <div className="panel-head"><div><span>Метрики</span><h2>Скорость и качество обработки</h2></div></div>
               <div className="stat-grid wide">
                 <StatCard label="Workers" value={processingStats.workers} />
                 <StatCard label="Avg total" value={`${formatMetric(processingStats.avg_total_seconds)}с`} />
@@ -524,7 +542,7 @@ function App() {
               </div>
             </section>
             <section className="glass-panel jobs-panel">
-              <div className="panel-head"><div><span>Queue</span><h2>Активные и проблемные jobs</h2></div></div>
+              <div className="panel-head"><div><span>Очередь</span><h2>Активные и проблемные jobs</h2></div></div>
               <div className="queue-stat-grid">
                 <StatCard label="Queued" value={queueCounts.queued} />
                 <StatCard label="Processing" value={queueCounts.processing} />
@@ -545,12 +563,12 @@ function App() {
         {activeTab === 'backups' ? (
           <div className="tab-stack split-stack">
             <section className="glass-panel action-panel">
-              <div className="panel-head"><div><span>Backups</span><h2>Telegram backup pipeline</h2></div></div>
+              <div className="panel-head"><div><span>Бэкапы</span><h2>Telegram backup pipeline</h2></div></div>
               <p className="lede">Metadata-бэкап быстрый и легкий, full backup архивирует больше данных и режется на части для Telegram.</p>
               <div className="button-row"><button className="secondary-button" type="button" onClick={() => void handleCreateBackup('metadata')}>Metadata</button><button className="primary-button" type="button" onClick={() => void handleCreateBackup('full')}>Full backup</button></div>
             </section>
             <section className="glass-panel list-panel">
-              <div className="panel-head"><div><span>History</span><h2>Последние backup-задачи</h2></div></div>
+              <div className="panel-head"><div><span>История</span><h2>Последние backup-задачи</h2></div></div>
               <div className="list-stack">
                 {backups.slice(0, 10).map((backup) => <article key={backup.id} className="list-row"><div><strong>{backup.scope}</strong><small>{backup.parts.length} частей · {formatDate(backup.created_at)}</small>{backup.error_message ? <small className="error-text">{backup.error_message}</small> : null}</div><span className={`badge badge-status-${backup.status}`}>{backup.status}</span></article>)}
               </div>
@@ -560,13 +578,13 @@ function App() {
         {activeTab === 'activity' ? (
           <div className="tab-stack split-stack">
             <section className="glass-panel list-panel">
-              <div className="panel-head"><div><span>Logs</span><h2>Последние события системы</h2></div></div>
+              <div className="panel-head"><div><span>Логи</span><h2>Последние события системы</h2></div></div>
               <div className="list-stack">
                 {overview.recent_logs.slice(0, 12).map((log) => <article key={log.id} className="list-row"><div><strong>{log.event_type}</strong><small>{trimText(log.message, '', 140)}</small><small>{formatDate(log.created_at)}</small></div><span className={`badge badge-severity-${log.severity}`}>{log.severity}</span></article>)}
               </div>
             </section>
             <section className="glass-panel tags-panel">
-              <div className="panel-head"><div><span>Discovery</span><h2>Частые теги в текущей выборке</h2></div></div>
+              <div className="panel-head"><div><span>Теги</span><h2>Частые теги в текущей выборке</h2></div></div>
               <div className="chip-row spacious">
                 {topTags.map(([tag, count]) => <button key={tag} className="tag-chip" type="button" onClick={() => { startTransition(() => setSearchInput(tag.replaceAll('_', ' '))); setActiveTab('library') }}>{tag.replaceAll('_', ' ')} · {count}</button>)}
               </div>
@@ -576,7 +594,7 @@ function App() {
         {activeTab === 'admin' && currentUser.role === 'admin' ? (
           <div className="tab-stack">
             <section className="glass-panel metrics-panel">
-              <div className="panel-head"><div><span>Storage</span><h2>Диск и распределение по проекту</h2></div></div>
+              <div className="panel-head"><div><span>Диск</span><h2>Диск и распределение по проекту</h2></div></div>
               {storage ? (
                 <>
                   <div className="stat-grid wide">
@@ -592,7 +610,7 @@ function App() {
               ) : <p className="muted">Storage analytics unavailable.</p>}
             </section>
             <section className="glass-panel admin-panel">
-              <div className="panel-head"><div><span>Access</span><h2>Пользователи и роли</h2></div></div>
+              <div className="panel-head"><div><span>Доступ</span><h2>Пользователи и роли</h2></div></div>
               <form className="admin-form" onSubmit={handleCreateUser}>
                 <label>username<input value={newUserForm.username} onChange={(event) => setNewUserForm({ ...newUserForm, username: event.target.value })} required /></label>
                 <label>password<input type="password" value={newUserForm.password} onChange={(event) => setNewUserForm({ ...newUserForm, password: event.target.value })} required /></label>

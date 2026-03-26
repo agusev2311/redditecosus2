@@ -254,8 +254,18 @@ select:focus {
   color: #ffd4de;
 }
 
+.global-notice {
+  color: var(--success);
+  padding: 1rem 1.25rem;
+}
+
 .global-error {
   padding: 1rem 1.25rem;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .sr-only {

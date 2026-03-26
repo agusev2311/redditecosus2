@@ -1,4 +1,4 @@
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, UploadResponse, User } from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, RetryFailedJobsResponse, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -97,6 +97,16 @@ export function listMedia(token: string, params: Record<string, string | undefin
 
 export function listJobs(token: string) {
   return request<{ items: JobItem[] }>('/api/jobs', {}, token)
+}
+
+export function retryFailedJobs(token: string) {
+  return request<RetryFailedJobsResponse>(
+    '/api/jobs/retry-failed',
+    {
+      method: 'POST',
+    },
+    token,
+  )
 }
 
 export function listBackups(token: string) {

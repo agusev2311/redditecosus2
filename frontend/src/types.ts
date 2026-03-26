@@ -113,3 +113,12 @@ export interface UploadResponse {
   items: MediaItem[]
   archives: Array<{ archive_id: string; media_ids: string[] }>
 }
+
+export interface RetryFailedJobsResponse {
+  failed_jobs_total: number
+  failed_media_total: number
+  queued_jobs: number
+  queued_media_ids: string[]
+  skipped_active_media: number
+  skipped_missing_media: number
+}

@@ -4,8 +4,9 @@ from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy import or_
 
 from app.db.session import SessionLocal
-from app.models import MediaItem, MediaTag, ProcessingJob, Tag
+from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, Tag
 from app.services.archive import ingest_archive
+from app.services.audit import audit
 from app.services.media_probe import detect_file_type
 from app.services.processing import enqueue_media, get_processing_coordinator
 from app.services.storage import absolute_media_path, absolute_thumbnail_path, queue_media_for_processing, save_uploaded_media
@@ -41,6 +42,13 @@ def _media_to_dict(item: MediaItem) -> dict:
 
 def _check_media_access(item: MediaItem, user) -> bool:
     return user.role.value == "admin" or item.owner_id == user.id
+
+
+def _jobs_query_for_current_user(session):
+    query = session.query(ProcessingJob)
+    if g.current_user.role.value != "admin":
+        query = query.filter(ProcessingJob.owner_id == g.current_user.id)
+    return query
 
 
 @media_bp.post("/media/upload")
@@ -227,9 +235,7 @@ def reindex_media(media_id: str):
 def list_jobs():
     session = SessionLocal()
     try:
-        query = session.query(ProcessingJob)
-        if g.current_user.role.value != "admin":
-            query = query.filter(ProcessingJob.owner_id == g.current_user.id)
+        query = _jobs_query_for_current_user(session)
         rows = query.order_by(ProcessingJob.created_at.desc()).limit(100).all()
         return jsonify(
             {
@@ -249,3 +255,81 @@ def list_jobs():
         )
     finally:
         session.close()
+
+
+@media_bp.post("/jobs/retry-failed")
+@login_required
+def retry_failed_jobs():
+    session = SessionLocal()
+    queued_job_ids: list[str] = []
+    skipped_active_media_ids: list[str] = []
+    skipped_missing_media_ids: list[str] = []
+    retried_media_ids: list[str] = []
+    failed_media_ids_seen: set[str] = set()
+
+    try:
+        failed_jobs = (
+            _jobs_query_for_current_user(session)
+            .filter(ProcessingJob.status == JobStatus.failed)
+            .order_by(ProcessingJob.created_at.desc())
+            .all()
+        )
+
+        for failed_job in failed_jobs:
+            media_id = failed_job.media_id
+            if media_id in failed_media_ids_seen:
+                continue
+            failed_media_ids_seen.add(media_id)
+
+            item = session.get(MediaItem, media_id)
+            if item is None or not _check_media_access(item, g.current_user):
+                skipped_missing_media_ids.append(media_id)
+                continue
+
+            active_job = (
+                session.query(ProcessingJob.id)
+                .filter(
+                    ProcessingJob.media_id == media_id,
+                    ProcessingJob.status.in_([JobStatus.queued, JobStatus.processing]),
+                )
+                .first()
+            )
+            if active_job:
+                skipped_active_media_ids.append(media_id)
+                continue
+
+            job = queue_media_for_processing(session, item)
+            queued_job_ids.append(job.id)
+            retried_media_ids.append(media_id)
+
+        session.commit()
+    finally:
+        session.close()
+
+    for job_id in queued_job_ids:
+        get_processing_coordinator().enqueue(job_id)
+
+    audit(
+        "media.retry_failed_jobs",
+        f"Retried failed jobs: queued {len(queued_job_ids)} media items",
+        actor_id=g.current_user.id,
+        owner_id=None if g.current_user.role.value == "admin" else g.current_user.id,
+        context={
+            "failed_jobs_total": len(failed_jobs) if 'failed_jobs' in locals() else 0,
+            "failed_media_total": len(failed_media_ids_seen),
+            "queued_jobs": len(queued_job_ids),
+            "skipped_active_media": len(skipped_active_media_ids),
+            "skipped_missing_media": len(skipped_missing_media_ids),
+        },
+    )
+
+    return jsonify(
+        {
+            "failed_jobs_total": len(failed_jobs) if 'failed_jobs' in locals() else 0,
+            "failed_media_total": len(failed_media_ids_seen),
+            "queued_jobs": len(queued_job_ids),
+            "queued_media_ids": retried_media_ids,
+            "skipped_active_media": len(skipped_active_media_ids),
+            "skipped_missing_media": len(skipped_missing_media_ids),
+        }
+    )

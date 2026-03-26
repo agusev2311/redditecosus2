@@ -15,6 +15,7 @@ import {
   mediaAssetUrl,
   me,
   reindexMedia,
+  retryFailedJobs,
   uploadFiles,
 } from './api'
 import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ProcessingStats, SafetyRating, User } from './types'
@@ -205,11 +206,13 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [dragActive, setDragActive] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [authForm, setAuthForm] = useState({ username: '', password: '', telegram: '' })
   const [newUserForm, setNewUserForm] = useState({ username: '', password: '', telegram: '', role: 'member' as 'admin' | 'member' })
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('library')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [retryingFailed, setRetryingFailed] = useState(false)
   const deferredSearch = useDeferredValue(searchInput)
 
   useEffect(() => {
@@ -306,6 +309,7 @@ function App() {
   const handleCreateBackup = async (scope: 'metadata' | 'full') => {
     if (!token) return
     setError('')
+    setNotice('')
     try {
       await createBackup(token, scope, true)
       setRefreshNonce((value) => value + 1)
@@ -318,6 +322,7 @@ function App() {
     event.preventDefault()
     if (!token) return
     setError('')
+    setNotice('')
     try {
       await createUser(token, { username: newUserForm.username, password: newUserForm.password, role: newUserForm.role, telegram_username: newUserForm.telegram })
       setNewUserForm({ username: '', password: '', telegram: '', role: 'member' })
@@ -341,11 +346,34 @@ function App() {
   const handleReindex = async (mediaId: string) => {
     if (!token) return
     setError('')
+    setNotice('')
     try {
       await reindexMedia(token, mediaId)
       setRefreshNonce((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Reindex failed')
+    }
+  }
+
+  const handleRetryFailedJobs = async () => {
+    if (!token || retryingFailed) return
+    setError('')
+    setNotice('')
+    setRetryingFailed(true)
+    try {
+      const result = await retryFailedJobs(token)
+      const parts = [
+        `В очередь возвращено ${result.queued_jobs}`,
+        `уникальных failed-медиа найдено ${result.failed_media_total}`,
+      ]
+      if (result.skipped_active_media) parts.push(`уже активных пропущено ${result.skipped_active_media}`)
+      if (result.skipped_missing_media) parts.push(`недоступных пропущено ${result.skipped_missing_media}`)
+      setNotice(parts.join(' · '))
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Retry failed jobs request failed')
+    } finally {
+      setRetryingFailed(false)
     }
   }
 
@@ -365,6 +393,8 @@ function App() {
     setBackups([])
     setSelectedMedia(null)
     setViewerOpen(false)
+    setNotice('')
+    setError('')
   }
 
   const queueCounts = { queued: 0, processing: 0, complete: 0, failed: 0 }
@@ -384,6 +414,7 @@ function App() {
 
   const processingStats = overview.processing_stats ?? emptyProcessingStats
   const backlogCount = queueCounts.queued + queueCounts.processing
+  const failedJobsTotal = processingStats.failed || queueCounts.failed
   const backlogEtaSeconds = processingStats.avg_total_seconds && processingStats.workers ? Math.round((backlogCount * processingStats.avg_total_seconds) / Math.max(processingStats.workers, 1)) : null
   const aiCoverage = media.length ? Math.round((completedMedia / media.length) * 100) : 0
   const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
@@ -465,6 +496,7 @@ function App() {
           <div className="workspace-pills"><span className="status-pill">{overview.counts.media} media</span><span className="status-pill">AI {aiCoverage}%</span><span className="status-pill">queue {backlogCount}</span></div>
         </header>
         {error ? <div className="global-error glass-panel">{error}</div> : null}
+        {notice ? <div className="global-notice glass-panel">{notice}</div> : null}
         {activeTab === 'library' ? (
           <div className="tab-stack">
             <section className="hero-grid">
@@ -542,12 +574,19 @@ function App() {
               </div>
             </section>
             <section className="glass-panel jobs-panel">
-              <div className="panel-head"><div><span>Очередь</span><h2>Активные и проблемные jobs</h2></div></div>
+              <div className="panel-head">
+                <div><span>Очередь</span><h2>Активные и проблемные jobs</h2></div>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => void handleRetryFailedJobs()} disabled={retryingFailed || failedJobsTotal === 0}>
+                    {retryingFailed ? 'Повторяем...' : `Повторить failed (${failedJobsTotal})`}
+                  </button>
+                </div>
+              </div>
               <div className="queue-stat-grid">
                 <StatCard label="Queued" value={queueCounts.queued} />
                 <StatCard label="Processing" value={queueCounts.processing} />
                 <StatCard label="Complete" value={queueCounts.complete} tone="success" />
-                <StatCard label="Failed" value={queueCounts.failed} tone="danger" />
+                <StatCard label="Failed" value={failedJobsTotal} tone="danger" />
               </div>
               <div className="list-stack">
                 {(queueFocus.length ? queueFocus : jobs.slice(0, 8)).map((job) => (

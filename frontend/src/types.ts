@@ -82,6 +82,23 @@ export interface ProcessingStats {
 export interface OverviewPayload {
   counts: {
     media: number
+    media_by_kind: {
+      image: number
+      gif: number
+      video: number
+    }
+    media_by_status: {
+      pending: number
+      processing: number
+      complete: number
+      failed: number
+    }
+    media_by_safety: {
+      sfw: number
+      questionable: number
+      nsfw: number
+      unknown: number
+    }
     users: number
     jobs: number
   }

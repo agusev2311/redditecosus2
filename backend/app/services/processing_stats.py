@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import or_
 from sqlalchemy.orm import Query, Session
 
-from app.models import AuditLog, JobStatus, ProcessingJob
+from app.models import AuditLog, JobStatus, MediaItem, ProcessingJob, ProcessingStatus
 from app.services.processing import get_processing_coordinator
 from app.utils.datetimes import seconds_between
 
@@ -37,16 +37,17 @@ def _completed_job_seconds(job: ProcessingJob) -> float | None:
 
 def build_processing_stats(
     session: Session,
+    media_query: Query[MediaItem],
     jobs_query: Query[ProcessingJob],
     logs_query: Query[AuditLog] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     last_day = now - timedelta(hours=24)
 
-    queued_count = jobs_query.filter(ProcessingJob.status == JobStatus.queued).count()
-    processing_count = jobs_query.filter(ProcessingJob.status == JobStatus.processing).count()
-    failed_count = jobs_query.filter(ProcessingJob.status == JobStatus.failed).count()
-    complete_count = jobs_query.filter(ProcessingJob.status == JobStatus.complete).count()
+    queued_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.pending).count()
+    processing_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.processing).count()
+    failed_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.failed).count()
+    complete_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.complete).count()
 
     completed_sample = (
         jobs_query.filter(

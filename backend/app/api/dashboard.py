@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, g, jsonify
 
 from app.db.session import SessionLocal
-from app.models import AuditLog, MediaItem, ProcessingJob, User
+from app.models import AuditLog, MediaItem, MediaKind, ProcessingJob, ProcessingStatus, SafetyRating, User
 from app.services.ai_proxy import ANALYSIS_PROMPT
 from app.services.disk_usage import summarize_disk_usage
 from app.services.processing_stats import build_processing_stats, recent_logs_query_for_user
@@ -11,6 +11,30 @@ from app.utils.auth import admin_required, login_required
 
 
 dashboard_bp = Blueprint("dashboard", __name__)
+
+
+def _build_media_counts(media_query):
+    total_media = media_query.count()
+    return {
+        "media": total_media,
+        "media_by_kind": {
+            "image": media_query.filter(MediaItem.kind == MediaKind.image).count(),
+            "gif": media_query.filter(MediaItem.kind == MediaKind.gif).count(),
+            "video": media_query.filter(MediaItem.kind == MediaKind.video).count(),
+        },
+        "media_by_status": {
+            "pending": media_query.filter(MediaItem.processing_status == ProcessingStatus.pending).count(),
+            "processing": media_query.filter(MediaItem.processing_status == ProcessingStatus.processing).count(),
+            "complete": media_query.filter(MediaItem.processing_status == ProcessingStatus.complete).count(),
+            "failed": media_query.filter(MediaItem.processing_status == ProcessingStatus.failed).count(),
+        },
+        "media_by_safety": {
+            "sfw": media_query.filter(MediaItem.safety_rating == SafetyRating.sfw).count(),
+            "questionable": media_query.filter(MediaItem.safety_rating == SafetyRating.questionable).count(),
+            "nsfw": media_query.filter(MediaItem.safety_rating == SafetyRating.nsfw).count(),
+            "unknown": media_query.filter(MediaItem.safety_rating == SafetyRating.unknown).count(),
+        },
+    }
 
 
 @dashboard_bp.get("/dashboard/overview")
@@ -26,15 +50,16 @@ def overview():
             jobs_query = jobs_query.filter(ProcessingJob.owner_id == g.current_user.id)
             logs_query = recent_logs_query_for_user(logs_query, g.current_user)
 
+        media_counts = _build_media_counts(media_query)
         recent_logs = logs_query.order_by(AuditLog.created_at.desc()).limit(20).all()
         return jsonify(
             {
                 "counts": {
-                    "media": media_query.count(),
+                    **media_counts,
                     "users": session.query(User).count() if g.current_user.role.value == "admin" else 1,
                     "jobs": jobs_query.count(),
                 },
-                "processing_stats": build_processing_stats(session, jobs_query, logs_query),
+                "processing_stats": build_processing_stats(session, media_query, jobs_query, logs_query),
                 "recent_logs": [
                     {
                         "id": row.id,

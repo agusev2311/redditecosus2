@@ -54,7 +54,19 @@ const emptyProcessingStats: ProcessingStats = {
   avg_reasoning_tokens: null,
   oldest_queued_seconds: null,
 }
-const emptyOverview: OverviewPayload = { counts: { media: 0, users: 0, jobs: 0 }, processing_stats: emptyProcessingStats, recent_logs: [], prompt_preview: '' }
+const emptyOverview: OverviewPayload = {
+  counts: {
+    media: 0,
+    media_by_kind: { image: 0, gif: 0, video: 0 },
+    media_by_status: { pending: 0, processing: 0, complete: 0, failed: 0 },
+    media_by_safety: { sfw: 0, questionable: 0, nsfw: 0, unknown: 0 },
+    users: 0,
+    jobs: 0,
+  },
+  processing_stats: emptyProcessingStats,
+  recent_logs: [],
+  prompt_preview: '',
+}
 
 function formatBytes(bytes: number) {
   if (!bytes) return '0 B'
@@ -483,26 +495,25 @@ function App() {
     setError('')
   }
 
-  const queueCounts = { queued: 0, processing: 0, complete: 0, failed: 0 }
-  const kindCounts = { image: 0, gif: 0, video: 0 }
-  let completedMedia = 0
-  let nsfwMedia = 0
   const tagCountMap = new Map<string, number>()
-  jobs.forEach((job) => {
-    queueCounts[job.status] += 1
-  })
   media.forEach((item) => {
-    kindCounts[item.kind] += 1
-    if (item.processing_status === 'complete') completedMedia += 1
-    if (item.safety_rating === 'nsfw') nsfwMedia += 1
     ;(item.tags ?? []).forEach((tag) => tagCountMap.set(tag.name, (tagCountMap.get(tag.name) ?? 0) + 1))
   })
 
   const processingStats = overview.processing_stats ?? emptyProcessingStats
-  const backlogCount = queueCounts.queued + queueCounts.processing
-  const failedJobsTotal = processingStats.failed || queueCounts.failed
+  const queueCounts = {
+    queued: processingStats.queued,
+    processing: processingStats.processing,
+    complete: processingStats.complete,
+    failed: processingStats.failed,
+  }
+  const kindCounts = overview.counts.media_by_kind
+  const completedMedia = overview.counts.media_by_status.complete
+  const nsfwMedia = overview.counts.media_by_safety.nsfw
+  const backlogCount = processingStats.queued + processingStats.processing
+  const failedJobsTotal = processingStats.failed
   const backlogEtaSeconds = processingStats.avg_total_seconds && processingStats.workers ? Math.round((backlogCount * processingStats.avg_total_seconds) / Math.max(processingStats.workers, 1)) : null
-  const aiCoverage = media.length ? Math.round((completedMedia / media.length) * 100) : 0
+  const aiCoverage = overview.counts.media ? Math.round((completedMedia / overview.counts.media) * 100) : 0
   const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
   const projectUsageTotal = storage?.project.total ?? 0
   const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')

@@ -5,10 +5,11 @@ from typing import Any, Callable
 
 import jwt
 from flask import g, jsonify, request
+from sqlalchemy.exc import OperationalError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.config import settings
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, ensure_database_schema, is_missing_table_error
 from app.models import User, UserRole
 
 
@@ -51,7 +52,15 @@ def _load_user_from_request() -> User | None:
 
     session = SessionLocal()
     try:
-        user = session.get(User, int(payload.get("sub")))
+        try:
+            user = session.get(User, int(payload.get("sub")))
+        except OperationalError as exc:
+            if not is_missing_table_error(exc):
+                raise
+            session.close()
+            ensure_database_schema()
+            session = SessionLocal()
+            user = session.get(User, int(payload.get("sub")))
         if user is None:
             return None
         session.expunge(user)
@@ -82,4 +91,3 @@ def admin_required(view: Callable[..., Any]) -> Callable[..., Any]:
         return view(*args, **kwargs)
 
     return wrapped
-

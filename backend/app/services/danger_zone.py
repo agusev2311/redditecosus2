@@ -3,9 +3,11 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from sqlalchemy import delete
+
 from app.config import settings
-from app.db.session import Base, SessionLocal, engine, init_db
-from app.models import AppConfigEntry, JobStatus, MediaItem, ProcessingJob, User
+from app.db.session import Base, SessionLocal, init_db
+from app.models import JobStatus, MediaItem, ProcessingJob, User
 from app.services.runtime_config import update_runtime_config_values
 from app.services.storage import ensure_storage_layout
 
@@ -55,22 +57,17 @@ def full_library_reset(*, confirmation: str, updated_by_id: int | None = None) -
         }
 
     SessionLocal.remove()
-    engine.dispose()
-    Base.metadata.drop_all(bind=engine)
-
-    _clear_directory_contents(settings.storage_root)
-    settings.database_path.unlink(missing_ok=True)
-    ensure_storage_layout()
-    init_db()
-
     session = SessionLocal()
     try:
-        pause_entry = session.get(AppConfigEntry, "processing_paused")
-        if pause_entry is not None:
-            session.delete(pause_entry)
-            session.commit()
+        for table in reversed(Base.metadata.sorted_tables):
+            session.execute(delete(table))
+        session.commit()
     finally:
         session.close()
+
+    _clear_directory_contents(settings.storage_root)
+    ensure_storage_layout()
+    init_db()
 
     return {
         "deleted": True,

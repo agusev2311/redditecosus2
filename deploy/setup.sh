@@ -102,17 +102,17 @@ prompt_text() {
   while true; do
     if [[ -n "$default_value" ]]; then
       if [[ "$secret" == "true" ]]; then
-        printf '[setup] %s [%s]: ' "$prompt" 'hidden'
+        printf '[setup] %s [%s]: ' "$prompt" 'hidden' >&2
         read -r -s answer
-        printf '\n'
+        printf '\n' >&2
       else
         read -r -p "[setup] $prompt [$default_value]: " answer
       fi
     else
       if [[ "$secret" == "true" ]]; then
-        printf '[setup] %s: ' "$prompt"
+        printf '[setup] %s: ' "$prompt" >&2
         read -r -s answer
-        printf '\n'
+        printf '\n' >&2
       else
         read -r -p "[setup] $prompt: " answer
       fi

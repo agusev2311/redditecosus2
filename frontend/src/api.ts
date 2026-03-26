@@ -1,14 +1,12 @@
-import type {
-  BackupItem,
-  DiskUsagePayload,
-  JobItem,
-  MediaItem,
-  OverviewPayload,
-  UploadResponse,
-  User,
-} from './types'
+import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, UploadResponse, User } from './types'
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:5000'
+const API_BASE =
+  (import.meta.env.VITE_API_URL as string | undefined) ??
+  (import.meta.env.DEV
+    ? 'http://127.0.0.1:5000'
+    : typeof window !== 'undefined'
+      ? window.location.origin
+      : 'https://localhost')
 
 function buildUrl(path: string, params?: Record<string, string | undefined>) {
   const url = new URL(path, API_BASE)

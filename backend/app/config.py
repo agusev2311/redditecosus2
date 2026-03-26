@@ -18,6 +18,12 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _csv(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    values = [item.strip() for item in raw.split(",")]
+    return tuple(item for item in values if item)
+
+
 @dataclass(frozen=True)
 class Settings:
     env: str = os.getenv("APP_ENV", "development")
@@ -26,6 +32,7 @@ class Settings:
     default_timezone: str = os.getenv("APP_DEFAULT_TIMEZONE", "Europe/Moscow")
     public_base_url: str = os.getenv("APP_PUBLIC_BASE_URL", "http://127.0.0.1:5000")
     frontend_url: str = os.getenv("APP_FRONTEND_URL", "http://127.0.0.1:5173")
+    frontend_origins: tuple[str, ...] = _csv("APP_FRONTEND_URL", "http://127.0.0.1:5173")
     processing_workers: int = int(os.getenv("APP_PROCESSING_WORKERS", "3"))
     thumbnail_width: int = int(os.getenv("APP_THUMBNAIL_WIDTH", "640"))
     backup_chunk_mb: int = int(os.getenv("APP_BACKUP_CHUNK_MB", "49"))
@@ -33,25 +40,29 @@ class Settings:
         "APP_DELETE_LOCAL_BACKUPS_AFTER_TELEGRAM",
         True,
     )
+    trust_reverse_proxy: bool = _bool("APP_TRUST_REVERSE_PROXY", True)
 
     ai_proxy_base_url: str = os.getenv("AI_PROXY_BASE_URL", "http://127.0.0.1:8317/v1")
     ai_proxy_api_key: str = os.getenv("AI_PROXY_API_KEY", "")
     ai_proxy_model: str = os.getenv("AI_PROXY_MODEL", "gpt-5.4")
     ai_proxy_reasoning_effort: str = os.getenv("AI_PROXY_REASONING_EFFORT", "xhigh")
     ai_proxy_timeout_seconds: int = int(os.getenv("AI_PROXY_TIMEOUT_SECONDS", "300"))
+    ai_proxy_verify_tls: bool = _bool("AI_PROXY_VERIFY_TLS", True)
+    ai_proxy_ca_bundle: str = os.getenv("AI_PROXY_CA_BUNDLE", "")
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_backup_chat_id: str = os.getenv("TELEGRAM_BACKUP_CHAT_ID", "")
     telegram_inline_base_url: str = os.getenv("TELEGRAM_INLINE_BASE_URL", "")
 
-    storage_root: Path = BASE_DIR / "storage"
+    data_root: Path = Path(os.getenv("APP_DATA_ROOT") or str(BASE_DIR))
+    storage_root: Path = data_root / "storage"
     incoming_dir: Path = storage_root / "incoming"
     media_dir: Path = storage_root / "media"
     archive_dir: Path = storage_root / "archives"
     thumbnails_dir: Path = storage_root / "thumbnails"
     backups_dir: Path = storage_root / "backups"
     logs_dir: Path = storage_root / "logs"
-    database_path: Path = BASE_DIR / "library.db"
+    database_path: Path = data_root / "library.db"
 
     @property
     def database_url(self) -> str:
@@ -59,4 +70,3 @@ class Settings:
 
 
 settings = Settings()
-

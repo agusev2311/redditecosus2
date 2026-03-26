@@ -81,7 +81,10 @@ ANALYSIS_SCHEMA = {
 
 class AIProxyService:
     def __init__(self) -> None:
-        self.client = httpx.Client(timeout=settings.ai_proxy_timeout_seconds)
+        verify: bool | str = settings.ai_proxy_verify_tls
+        if settings.ai_proxy_ca_bundle:
+            verify = settings.ai_proxy_ca_bundle
+        self.client = httpx.Client(timeout=settings.ai_proxy_timeout_seconds, verify=verify)
 
     def analyze_media(self, media: MediaItem) -> dict[str, Any]:
         path = absolute_media_path(media)
@@ -154,4 +157,3 @@ class AIProxyService:
 
 
 ai_proxy_service = AIProxyService()
-

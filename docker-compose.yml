@@ -1,0 +1,72 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: production
+      APP_DATA_ROOT: /app/data
+      APP_TRUST_REVERSE_PROXY: "true"
+      APP_PUBLIC_BASE_URL: https://${APP_DOMAIN:-localhost}
+      APP_FRONTEND_URL: https://${APP_DOMAIN:-localhost},https://localhost
+      TELEGRAM_INLINE_BASE_URL: https://${APP_DOMAIN:-localhost}
+    volumes:
+      - app_data:/app/data
+      - ${EXTRA_CA_CERTS_PATH:-./deploy/certs}:/run/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      SERVER_NAME: ${APP_DOMAIN:-localhost}
+      BACKEND_UPSTREAM: backend:5000
+      TLS_CERT_PATH: /etc/nginx/certs/server.crt
+      TLS_KEY_PATH: /etc/nginx/certs/server.key
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_PATH:-./deploy/certs/server.crt}:/etc/nginx/certs/server.crt:ro
+      - ${TLS_KEY_PATH:-./deploy/certs/server.key}:/etc/nginx/certs/server.key:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- https://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  telegram-bot:
+    build:
+      context: ./backend
+    command: ["python", "telegram_bot.py"]
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: production
+      APP_DATA_ROOT: /app/data
+      APP_TRUST_REVERSE_PROXY: "true"
+      APP_PUBLIC_BASE_URL: https://${APP_DOMAIN:-localhost}
+      APP_FRONTEND_URL: https://${APP_DOMAIN:-localhost},https://localhost
+      TELEGRAM_INLINE_BASE_URL: https://${APP_DOMAIN:-localhost}
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - app_data:/app/data
+      - ${EXTRA_CA_CERTS_PATH:-./deploy/certs}:/run/certs:ro
+    restart: unless-stopped
+
+volumes:
+  app_data:

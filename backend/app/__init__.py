@@ -2,6 +2,7 @@ import os
 
 from flask import Flask
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.api import register_blueprints
 from app.config import settings
@@ -16,7 +17,9 @@ def create_app() -> Flask:
     app.config["SECRET_KEY"] = settings.secret_key
     app.config["MAX_CONTENT_LENGTH"] = None
     app.config["JSON_SORT_KEYS"] = False
-    CORS(app, origins=[settings.frontend_url], supports_credentials=True)
+    if settings.trust_reverse_proxy:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
+    CORS(app, origins=list(settings.frontend_origins), supports_credentials=True)
 
     ensure_storage_layout()
     configure_logging()

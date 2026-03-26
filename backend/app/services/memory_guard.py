@@ -71,16 +71,26 @@ def _parse_memory_stat(raw: str | None) -> dict[str, int]:
     return stats
 
 
-def _memory_from_cgroup_v2() -> dict[str, Any] | None:
+def _has_effective_cgroup_limit(limit_bytes: int | None, host_total_bytes: int | None) -> bool:
+    if limit_bytes is None or limit_bytes <= 0:
+        return False
+    if host_total_bytes is not None and limit_bytes >= host_total_bytes:
+        return False
+    return True
+
+
+def _memory_from_cgroup_v2(host_total_bytes: int | None = None) -> dict[str, Any] | None:
     current = _read_int(_CGROUP_V2_DIR / "memory.current")
     max_limit = _read_int(_CGROUP_V2_DIR / "memory.max")
     if current is None:
+        return None
+    if not _has_effective_cgroup_limit(max_limit, host_total_bytes):
         return None
     stats = _parse_memory_stat(_read_text(_CGROUP_V2_DIR / "memory.stat"))
     inactive_file = stats.get("inactive_file", 0)
     working_set = max(current - inactive_file, 0)
     total = max_limit or current
-    available = max(total - working_set, 0) if max_limit else 0
+    available = max(total - working_set, 0)
     return {
         "source": "cgroup_v2",
         "total_bytes": total,
@@ -91,16 +101,18 @@ def _memory_from_cgroup_v2() -> dict[str, Any] | None:
     }
 
 
-def _memory_from_cgroup_v1() -> dict[str, Any] | None:
+def _memory_from_cgroup_v1(host_total_bytes: int | None = None) -> dict[str, Any] | None:
     current = _read_int(_CGROUP_V1_DIR / "memory.usage_in_bytes")
     max_limit = _read_int(_CGROUP_V1_DIR / "memory.limit_in_bytes")
     if current is None:
+        return None
+    if not _has_effective_cgroup_limit(max_limit, host_total_bytes):
         return None
     stats = _parse_memory_stat(_read_text(_CGROUP_V1_DIR / "memory.stat"))
     inactive_file = stats.get("total_inactive_file", stats.get("inactive_file", 0))
     working_set = max(current - inactive_file, 0)
     total = max_limit or current
-    available = max(total - working_set, 0) if max_limit else 0
+    available = max(total - working_set, 0)
     return {
         "source": "cgroup_v1",
         "total_bytes": total,
@@ -175,7 +187,9 @@ def _memory_from_windows() -> dict[str, Any] | None:
 
 
 def get_memory_stats() -> dict[str, Any]:
-    stats = _memory_from_cgroup_v2() or _memory_from_cgroup_v1() or _memory_from_proc_meminfo() or _memory_from_windows()
+    host_stats = _memory_from_proc_meminfo() or _memory_from_windows()
+    host_total_bytes = int(host_stats["total_bytes"]) if host_stats else None
+    stats = _memory_from_cgroup_v2(host_total_bytes) or _memory_from_cgroup_v1(host_total_bytes) or host_stats
     if stats is None:
         return {
             "source": "unknown",

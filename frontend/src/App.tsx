@@ -5,6 +5,7 @@ import {
   createBackup,
   createUser,
   getBootstrapStatus,
+  getMedia,
   getOverview,
   getRuntimeConfig,
   getStorage,
@@ -85,8 +86,8 @@ const emptyOverview: OverviewPayload = {
     triggered_at: null,
     reason: null,
     snapshot: null,
-    pause_available_mb: 256,
-    resume_available_mb: 512,
+    pause_available_mb: 192,
+    resume_available_mb: 320,
     memory: {
       source: 'unknown',
       total_bytes: 0,
@@ -100,6 +101,19 @@ const emptyOverview: OverviewPayload = {
       usage_percent: 0,
     },
   },
+  processor: {
+    active: false,
+    last_seen: null,
+    stale_seconds: null,
+    timeout_seconds: 45,
+    hostname: null,
+    pid: null,
+    workers: 0,
+    desired_workers: 0,
+    active_load: 0,
+    queue_size: 0,
+  },
+  processing_paused: false,
   recent_logs: [],
   prompt_preview: '',
 }
@@ -385,6 +399,84 @@ function TagRow({ item, active, onClick }: { item: TagCatalogItem; active: boole
   )
 }
 
+function TagDetailsContent({
+  selectedTag,
+  selectedTagDetails,
+  onClose,
+}: {
+  selectedTag: TagCatalogItem | null
+  selectedTagDetails: Record<string, unknown> | null
+  onClose?: () => void
+}) {
+  if (!selectedTag) {
+    return (
+      <article className="empty-state">
+        <h2>Выберите тег слева.</h2>
+        <p className="muted">Здесь появится подробное описание, свойства, связи и подсказки для поиска.</p>
+      </article>
+    )
+  }
+
+  return (
+    <>
+      <div className="panel-head">
+        <div>
+          <span>{selectedTag.kind}</span>
+          <h2>{prettifyTag(selectedTag.name)}</h2>
+        </div>
+        <div className="tag-detail-head-actions">
+          <div className="chip-row">
+            <span className="badge">{selectedTag.usage_count} uses</span>
+            <span className={`badge ${selectedTag.is_described ? 'badge-status-complete' : 'badge-status-pending'}`}>{selectedTag.is_described ? 'ready' : 'pending'}</span>
+          </div>
+          {onClose ? <button className="ghost-button mobile-only" type="button" onClick={onClose}>Закрыть</button> : null}
+        </div>
+      </div>
+      <div className="tag-details-scroll">
+        <div className="note-block">
+          <span>Описание RU</span>
+          <p>{trimText(selectedTag.description_ru, 'AI-описание для этого тега еще не готово.', 2000)}</p>
+        </div>
+        <div className="note-block">
+          <span>Description EN</span>
+          <p>{trimText(selectedTag.description_en, 'English tag description is not available yet.', 2000)}</p>
+        </div>
+        <div className="detail-grid tag-detail-grid">
+          <div><span>Aliases</span><strong>{readDetailList(selectedTagDetails, 'aliases').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
+          <div><span>Parents</span><strong>{readDetailList(selectedTagDetails, 'parent_categories').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
+          <div><span>Related</span><strong>{readDetailList(selectedTagDetails, 'related_tags').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
+          <div><span>Described</span><strong>{formatDate(selectedTag.ai_described_at)}</strong></div>
+        </div>
+        <div className="note-block">
+          <span>Свойства</span>
+          <ul className="detail-list">
+            {readDetailList(selectedTagDetails, 'distinguishing_features').map((value) => <li key={value}>{value}</li>)}
+          </ul>
+        </div>
+        <div className="note-block">
+          <span>Типичный контекст</span>
+          <ul className="detail-list">
+            {readDetailList(selectedTagDetails, 'common_contexts').map((value) => <li key={value}>{value}</li>)}
+          </ul>
+        </div>
+        <div className="note-block">
+          <span>Search hints</span>
+          <div className="chip-row spacious">
+            {readDetailList(selectedTagDetails, 'search_hints').map((value) => <span key={value} className="tag-chip">{value}</span>)}
+          </div>
+        </div>
+        {(readDetailText(selectedTagDetails, 'moderation_notes_ru') || readDetailText(selectedTagDetails, 'ambiguity_note_ru')) ? (
+          <div className="note-block">
+            <span>Примечания</span>
+            <p>{trimText(readDetailText(selectedTagDetails, 'moderation_notes_ru'), '', 1200)}</p>
+            {readDetailText(selectedTagDetails, 'ambiguity_note_ru') ? <p className="muted">{trimText(readDetailText(selectedTagDetails, 'ambiguity_note_ru'), '', 600)}</p> : null}
+          </div>
+        ) : null}
+      </div>
+    </>
+  )
+}
+
 function App() {
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? '')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
@@ -400,6 +492,7 @@ function App() {
   const [runtimeConfigForm, setRuntimeConfigForm] = useState<Record<string, string>>({})
   const [tagCatalog, setTagCatalog] = useState<TagCatalogPayload>(emptyTagCatalog)
   const [selectedTag, setSelectedTag] = useState<TagCatalogItem | null>(null)
+  const [tagDetailOpen, setTagDetailOpen] = useState(false)
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
   const [searchInput, setSearchInput] = useState('')
@@ -433,6 +526,7 @@ function App() {
   const [resettingLibrary, setResettingLibrary] = useState(false)
   const deferredSearch = useDeferredValue(searchInput)
   const deferredTagSearch = useDeferredValue(tagSearch)
+  const isAdmin = currentUser?.role === 'admin'
 
   useEffect(() => {
     void getBootstrapStatus().then((data) => setNeedsBootstrap(data.needs_bootstrap)).catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load bootstrap status'))
@@ -456,18 +550,21 @@ function App() {
           backupsPayload,
           feedPayload,
           tagPayload,
+          adminPayload,
         ] = await Promise.all([
           getOverview(token),
-          listMedia(token, { q: deferredSearch || undefined, kind: kindFilter || undefined, rating: ratingFilter || undefined, status: statusFilter || undefined }),
-          listJobs(token),
-          listBackups(token),
+          activeTab === 'library'
+            ? listMedia(token, { q: deferredSearch || undefined, kind: kindFilter || undefined, rating: ratingFilter || undefined, status: statusFilter || undefined })
+            : Promise.resolve(null),
+          activeTab === 'processing' ? listJobs(token) : Promise.resolve(null),
+          activeTab === 'backups' ? listBackups(token) : Promise.resolve(null),
           activeTab === 'feed'
             ? listMedia(token, {
                 created_from: feedFrom || undefined,
                 created_to: feedTo || undefined,
                 limit: '120',
               })
-            : Promise.resolve({ items: [] }),
+            : Promise.resolve(null),
           activeTab === 'tags'
             ? listTags(token, {
                 q: deferredTagSearch || undefined,
@@ -475,18 +572,20 @@ function App() {
                 described: tagDescribedFilter || undefined,
                 limit: '240',
               })
-            : Promise.resolve(emptyTagCatalog),
+            : Promise.resolve(null),
+          isAdmin && activeTab === 'admin'
+            ? Promise.all([getStorage(token), getUsers(token), getRuntimeConfig(token)])
+            : Promise.resolve(null),
         ])
         if (cancelled) return
         setOverview(overviewPayload)
-        setMedia(mediaPayload.items)
-        setJobs(jobsPayload.items)
-        setBackups(backupsPayload.items)
-        if (activeTab === 'feed') setFeedItems(feedPayload.items)
-        if (activeTab === 'tags') setTagCatalog(tagPayload)
-        if (currentUser.role === 'admin') {
-          const [storagePayload, usersPayload, runtimeConfigPayload] = await Promise.all([getStorage(token), getUsers(token), getRuntimeConfig(token)])
-          if (cancelled) return
+        if (mediaPayload) setMedia(mediaPayload.items)
+        if (jobsPayload) setJobs(jobsPayload.items)
+        if (backupsPayload) setBackups(backupsPayload.items)
+        if (feedPayload) setFeedItems(feedPayload.items)
+        if (tagPayload) setTagCatalog(tagPayload)
+        if (adminPayload) {
+          const [storagePayload, usersPayload, runtimeConfigPayload] = adminPayload
           setStorage(storagePayload)
           setUsers(usersPayload.items)
           setRuntimeConfig(runtimeConfigPayload.items)
@@ -495,7 +594,7 @@ function App() {
               ? current
               : Object.fromEntries(runtimeConfigPayload.items.map((item) => [item.key, configValueToInput(item.value)]))
           ))
-        } else {
+        } else if (!isAdmin) {
           setStorage(null)
           setUsers([])
           setRuntimeConfig([])
@@ -511,16 +610,24 @@ function App() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [token, currentUser, deferredSearch, kindFilter, ratingFilter, statusFilter, activeTab, deferredTagSearch, tagKindFilter, tagDescribedFilter, feedFrom, feedTo, refreshNonce])
+  }, [token, currentUser, deferredSearch, kindFilter, ratingFilter, statusFilter, activeTab, deferredTagSearch, tagKindFilter, tagDescribedFilter, feedFrom, feedTo, refreshNonce, isAdmin])
   useEffect(() => {
     if (!selectedMedia) return
     const refreshed = [...media, ...feedItems].find((item) => item.id === selectedMedia.id)
-    if (!refreshed) {
-      setSelectedMedia(null)
-      setViewerOpen(false)
-      return
-    }
-    if (refreshed !== selectedMedia) setSelectedMedia(refreshed)
+    if (!refreshed) return
+    setSelectedMedia((current) => {
+      if (!current || current.id !== refreshed.id) return current
+      return {
+        ...current,
+        ...refreshed,
+        description: current.description ?? refreshed.description,
+        description_ru: current.description_ru ?? refreshed.description_ru,
+        description_en: current.description_en ?? refreshed.description_en,
+        technical_notes: current.technical_notes ?? refreshed.technical_notes,
+        ai_payload: current.ai_payload ?? refreshed.ai_payload,
+        tags: refreshed.tags?.length ? refreshed.tags : current.tags,
+      }
+    })
   }, [media, feedItems, selectedMedia])
   useEffect(() => {
     if (!selectedMedia) return
@@ -544,6 +651,9 @@ function App() {
   useEffect(() => {
     if (currentUser?.role !== 'admin' && activeTab === 'admin') setActiveTab('library')
   }, [activeTab, currentUser])
+  useEffect(() => {
+    if (activeTab !== 'tags') setTagDetailOpen(false)
+  }, [activeTab])
 
   const handleAuthSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -793,9 +903,30 @@ function App() {
     setFeedTo(toDateInputString(now))
   }
 
+  const handleSelectTag = (item: TagCatalogItem) => {
+    startTransition(() => {
+      setSelectedTag(item)
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 960px)').matches) {
+        setTagDetailOpen(true)
+      }
+    })
+  }
+
   const openMedia = (item: MediaItem) => startTransition(() => {
     setSelectedMedia(item)
     setViewerOpen(true)
+    void (async () => {
+      if (!token) return
+      try {
+        const response = await getMedia(token, item.id)
+        setMedia((current) => current.map((entry) => (entry.id === response.item.id ? { ...entry, ...response.item } : entry)))
+        setFeedItems((current) => current.map((entry) => (entry.id === response.item.id ? { ...entry, ...response.item } : entry)))
+        setSelectedMedia((current) => (current && current.id === item.id ? response.item : current))
+      } catch (reason) {
+        setSelectedMedia((current) => current)
+        setError((current) => (current || (reason instanceof Error ? reason.message : 'Failed to load media details')))
+      }
+    })()
   })
   const logout = () => {
     localStorage.removeItem(TOKEN_KEY)
@@ -826,6 +957,7 @@ function App() {
   const processingStats = overview.processing_stats ?? emptyProcessingStats
   const aiProxySleep = overview.ai_proxy_sleep ?? emptyOverview.ai_proxy_sleep
   const memoryGuard = overview.memory_guard ?? emptyOverview.memory_guard
+  const processor = overview.processor ?? emptyOverview.processor
   const queueCounts = {
     queued: processingStats.queued,
     processing: processingStats.processing,
@@ -839,6 +971,15 @@ function App() {
   const failedJobsTotal = processingStats.failed
   const backlogEtaSeconds = processingStats.avg_total_seconds && processingStats.workers ? Math.round((backlogCount * processingStats.avg_total_seconds) / Math.max(processingStats.workers, 1)) : null
   const aiCoverage = overview.counts.media ? Math.round((completedMedia / overview.counts.media) * 100) : 0
+  const processingStatusBanner = overview.processing_paused
+    ? 'Обработка поставлена на паузу вручную. Новые задачи не стартуют, пока вы не снимете Processing paused в админке.'
+    : memoryGuard.active
+      ? `Обработка приостановлена memory guard: сейчас доступно ${formatMetric(memoryGuard.memory.available_mb)} MB. Автовозврат после подъема выше ${memoryGuard.resume_available_mb} MB.`
+      : aiProxySleep.active
+        ? `AI proxy cooldown активен до ${formatDate(aiProxySleep.sleep_until)}. Осталось ${formatDuration(aiProxySleep.remaining_seconds ?? 0)}.`
+        : backlogCount > 0 && !processor.active
+          ? 'Очередь стоит, потому что processor не подает heartbeat. Проверьте сервис processor в Docker и его логи.'
+          : ''
   const driveUsagePercent = storage?.drive_total ? Math.round((storage.drive_used / storage.drive_total) * 100) : 0
   const projectUsageTotal = storage?.project.total ?? 0
   const projectBreakdown = Object.entries(storage?.project ?? {}).filter(([name]) => name !== 'total')
@@ -969,6 +1110,7 @@ function App() {
         </header>
         {error ? <div className="global-error glass-panel">{error}</div> : null}
         {notice ? <div className="global-notice glass-panel">{notice}</div> : null}
+        {processingStatusBanner ? <div className="global-warning glass-panel">{processingStatusBanner}</div> : null}
         {activeTab === 'library' ? (
           <div className="tab-stack">
             <section className="hero-grid">
@@ -1085,20 +1227,20 @@ function App() {
                 <StatCard label="Ожидают" value={tagCatalog.counts.pending} tone="danger" />
                 <StatCard label="Лидерборд" value={leaderboardTags.length} hint="топ по использованию" tone="accent" />
               </div>
-              <div className="chip-row spacious">
-                {leaderboardTags.map((tag) => (
-                  <button
-                    key={tag.id}
-                    className={`tag-chip tag-${tag.kind}`}
-                    type="button"
-                    onClick={() => {
-                      setSelectedTag(tag)
-                      setTagSearch(tag.name)
-                    }}
-                  >
-                    {prettifyTag(tag.name)} · {tag.usage_count}
-                  </button>
-                ))}
+                <div className="chip-row spacious">
+                  {leaderboardTags.map((tag) => (
+                    <button
+                      key={tag.id}
+                      className={`tag-chip tag-${tag.kind}`}
+                      type="button"
+                      onClick={() => {
+                        handleSelectTag(tag)
+                        setTagSearch(tag.name)
+                      }}
+                    >
+                      {prettifyTag(tag.name)} · {tag.usage_count}
+                    </button>
+                  ))}
               </div>
             </section>
             <section className="glass-panel filter-panel">
@@ -1113,68 +1255,11 @@ function App() {
               <section className="glass-panel list-panel">
                 <div className="panel-head"><div><span>Список</span><h2>{tagCatalog.items.length} тегов в выдаче</h2></div></div>
                 <div className="list-stack">
-                  {tagCatalog.items.length ? tagCatalog.items.map((item) => <TagRow key={item.id} item={item} active={selectedTag?.id === item.id} onClick={() => setSelectedTag(item)} />) : <article className="empty-state"><h2>Теги по этому фильтру не найдены.</h2><p className="muted">Измените поиск или дождитесь, пока processor доопишет pending-теги.</p></article>}
+                  {tagCatalog.items.length ? tagCatalog.items.map((item) => <TagRow key={item.id} item={item} active={selectedTag?.id === item.id} onClick={() => handleSelectTag(item)} />) : <article className="empty-state"><h2>Теги по этому фильтру не найдены.</h2><p className="muted">Измените поиск или дождитесь, пока processor доопишет pending-теги.</p></article>}
                 </div>
               </section>
-              <section className="glass-panel tags-panel">
-                {selectedTag ? (
-                  <>
-                    <div className="panel-head">
-                      <div>
-                        <span>{selectedTag.kind}</span>
-                        <h2>{prettifyTag(selectedTag.name)}</h2>
-                      </div>
-                      <div className="chip-row">
-                        <span className="badge">{selectedTag.usage_count} uses</span>
-                        <span className={`badge ${selectedTag.is_described ? 'badge-status-complete' : 'badge-status-pending'}`}>{selectedTag.is_described ? 'ready' : 'pending'}</span>
-                      </div>
-                    </div>
-                    <div className="note-block">
-                      <span>Описание RU</span>
-                      <p>{trimText(selectedTag.description_ru, 'AI-описание для этого тега еще не готово.', 2000)}</p>
-                    </div>
-                    <div className="note-block">
-                      <span>Description EN</span>
-                      <p>{trimText(selectedTag.description_en, 'English tag description is not available yet.', 2000)}</p>
-                    </div>
-                    <div className="detail-grid tag-detail-grid">
-                      <div><span>Aliases</span><strong>{readDetailList(selectedTagDetails, 'aliases').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
-                      <div><span>Parents</span><strong>{readDetailList(selectedTagDetails, 'parent_categories').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
-                      <div><span>Related</span><strong>{readDetailList(selectedTagDetails, 'related_tags').map(prettifyTag).join(', ') || 'n/a'}</strong></div>
-                      <div><span>Described</span><strong>{formatDate(selectedTag.ai_described_at)}</strong></div>
-                    </div>
-                    <div className="note-block">
-                      <span>Свойства</span>
-                      <ul className="detail-list">
-                        {readDetailList(selectedTagDetails, 'distinguishing_features').map((value) => <li key={value}>{value}</li>)}
-                      </ul>
-                    </div>
-                    <div className="note-block">
-                      <span>Типичный контекст</span>
-                      <ul className="detail-list">
-                        {readDetailList(selectedTagDetails, 'common_contexts').map((value) => <li key={value}>{value}</li>)}
-                      </ul>
-                    </div>
-                    <div className="note-block">
-                      <span>Search hints</span>
-                      <div className="chip-row spacious">
-                        {readDetailList(selectedTagDetails, 'search_hints').map((value) => <span key={value} className="tag-chip">{value}</span>)}
-                      </div>
-                    </div>
-                    {(readDetailText(selectedTagDetails, 'moderation_notes_ru') || readDetailText(selectedTagDetails, 'ambiguity_note_ru')) ? (
-                      <div className="note-block">
-                        <span>Примечания</span>
-                        <p>{trimText(readDetailText(selectedTagDetails, 'moderation_notes_ru'), '', 1200)}</p>
-                        {readDetailText(selectedTagDetails, 'ambiguity_note_ru') ? <p className="muted">{trimText(readDetailText(selectedTagDetails, 'ambiguity_note_ru'), '', 600)}</p> : null}
-                      </div>
-                    ) : null}
-                  </>
-                ) : (
-                  <article className="empty-state">
-                    <h2>Выберите тег слева.</h2>
-                    <p className="muted">Здесь появится подробное описание, свойства, связи и подсказки для поиска.</p>
-                  </article>
-                )}
+              <section className="glass-panel tags-panel tag-detail-panel">
+                <TagDetailsContent selectedTag={selectedTag} selectedTagDetails={selectedTagDetails} />
               </section>
             </section>
           </div>
@@ -1465,6 +1550,13 @@ function App() {
                 <div className="chip-row spacious">{(selectedMedia.tags ?? []).map((tag) => <span key={`${selectedMedia.id}-${tag.kind}-${tag.name}`} className={`tag-chip tag-${tag.kind}`}>{tag.name.replaceAll('_', ' ')}</span>)}</div>
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+      {tagDetailOpen && selectedTag ? (
+        <div className="tag-sheet-backdrop" onClick={() => setTagDetailOpen(false)}>
+          <div className="tag-sheet glass-panel" onClick={(event) => event.stopPropagation()}>
+            <TagDetailsContent selectedTag={selectedTag} selectedTagDetails={selectedTagDetails} onClose={() => setTagDetailOpen(false)} />
           </div>
         </div>
       ) : null}

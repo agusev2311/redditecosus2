@@ -136,6 +136,19 @@ export interface MemoryGuardState {
   }
 }
 
+export interface ProcessorStatus {
+  active: boolean
+  last_seen?: string | null
+  stale_seconds?: number | null
+  timeout_seconds: number
+  hostname?: string | null
+  pid?: number | null
+  workers?: number | null
+  desired_workers?: number | null
+  active_load?: number | null
+  queue_size?: number | null
+}
+
 export interface OverviewPayload {
   counts: {
     media: number
@@ -163,6 +176,8 @@ export interface OverviewPayload {
   processing_stats: ProcessingStats
   ai_proxy_sleep: AIProxySleepState
   memory_guard: MemoryGuardState
+  processor: ProcessorStatus
+  processing_paused: boolean
   recent_logs: LogItem[]
   prompt_preview: string
 }

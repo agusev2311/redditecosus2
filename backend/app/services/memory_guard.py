@@ -207,10 +207,18 @@ def _pause_threshold_mb() -> int:
     return max(64, int(get_runtime_value("processing_memory_pause_available_mb")))
 
 
-def _resume_threshold_mb() -> int:
+def _resume_threshold_mb(stats: dict[str, Any] | None = None) -> int:
     pause_threshold = _pause_threshold_mb()
     configured = max(64, int(get_runtime_value("processing_memory_resume_available_mb")))
-    return max(configured, pause_threshold + 64)
+    baseline = max(configured, pause_threshold + 32)
+
+    current_stats = stats or get_memory_stats()
+    total_mb = float(current_stats.get("total_mb") or 0)
+    if total_mb <= 0 or total_mb > 4096:
+        return baseline
+
+    adaptive_cap = max(pause_threshold + 32, int(total_mb * 0.15))
+    return min(baseline, adaptive_cap)
 
 
 def _read_state_rows() -> dict[str, str]:
@@ -271,7 +279,7 @@ def get_processing_memory_guard_state() -> dict[str, Any]:
         "reason": rows.get(MEMORY_GUARD_REASON_KEY) or None,
         "snapshot": rows.get(MEMORY_GUARD_SNAPSHOT_KEY) or None,
         "pause_available_mb": _pause_threshold_mb(),
-        "resume_available_mb": _resume_threshold_mb(),
+        "resume_available_mb": _resume_threshold_mb(stats),
         "memory": stats,
     }
 

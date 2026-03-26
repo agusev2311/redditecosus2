@@ -9,7 +9,9 @@ from app.services.ai_limit_guard import get_ai_proxy_sleep_state
 from app.services.memory_guard import get_processing_memory_guard_state
 from app.services.ai_proxy import ANALYSIS_PROMPT
 from app.services.disk_usage import summarize_disk_usage
+from app.services.processor_monitor import get_processor_status
 from app.services.processing_stats import build_processing_stats, recent_logs_query_for_user
+from app.services.runtime_config import get_runtime_value
 from app.utils.auth import admin_required, login_required
 
 
@@ -72,6 +74,8 @@ def overview():
                 "processing_stats": build_processing_stats(session, media_query, jobs_query, logs_query),
                 "ai_proxy_sleep": get_ai_proxy_sleep_state(),
                 "memory_guard": get_processing_memory_guard_state(),
+                "processor": get_processor_status(),
+                "processing_paused": bool(get_runtime_value("processing_paused")),
                 "recent_logs": [
                     {
                         "id": row.id,

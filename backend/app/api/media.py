@@ -21,15 +21,25 @@ from app.utils.auth import login_required
 media_bp = Blueprint("media", __name__)
 
 _RATING_TAGS = {rating.value for rating in SafetyRating}
+_MEDIA_LIST_DESCRIPTION_MAX_CHARS = 240
 
 
-def _media_to_dict(item: MediaItem) -> dict:
+def _trim_text(value: str | None, max_chars: int | None) -> str | None:
+    if value is None or max_chars is None:
+        return value
+    text = value.strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}..."
+
+
+def _media_to_dict(item: MediaItem, *, include_full_payload: bool, description_max_chars: int | None = None) -> dict:
     thumbnail_path = absolute_thumbnail_path(item)
     description_ru = None
     description_en = None
     if isinstance(item.ai_payload, dict):
-        description_ru = item.ai_payload.get("description_ru")
-        description_en = item.ai_payload.get("description_en")
+        description_ru = _trim_text(item.ai_payload.get("description_ru"), description_max_chars)
+        description_en = _trim_text(item.ai_payload.get("description_en"), description_max_chars)
     return {
         "id": item.id,
         "kind": item.kind.value,
@@ -41,15 +51,15 @@ def _media_to_dict(item: MediaItem) -> dict:
         "duration_seconds": item.duration_seconds,
         "blur_score": item.blur_score,
         "safety_rating": item.safety_rating.value,
-        "description": item.description,
+        "description": _trim_text(item.description, description_max_chars),
         "description_ru": description_ru,
         "description_en": description_en,
-        "technical_notes": item.technical_notes,
+        "technical_notes": item.technical_notes if include_full_payload else None,
         "processing_status": item.processing_status.value,
         "normalized_timestamp": item.normalized_timestamp.isoformat() if item.normalized_timestamp else None,
         "thumbnail_url": f"/api/media/{item.id}/thumbnail" if thumbnail_path and thumbnail_path.exists() else None,
         "file_url": f"/api/media/{item.id}/file",
-        "ai_payload": item.ai_payload,
+        "ai_payload": item.ai_payload if include_full_payload else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }
 
@@ -70,10 +80,44 @@ def _tags_for_media_ids(session, media_ids: list[str]) -> dict[str, list[dict]]:
     return tag_map
 
 
-def _serialize_media_list(session, rows: list[MediaItem]) -> list[dict]:
+def _serialize_media_item(
+    session,
+    item: MediaItem,
+    *,
+    include_full_payload: bool,
+    description_max_chars: int | None = None,
+) -> dict:
+    tag_map = _tags_for_media_ids(session, [item.id])
+    return {
+        **_media_to_dict(
+            item,
+            include_full_payload=include_full_payload,
+            description_max_chars=description_max_chars,
+        ),
+        "tags": tag_map.get(item.id, []),
+    }
+
+
+def _serialize_media_list(
+    session,
+    rows: list[MediaItem],
+    *,
+    include_full_payload: bool,
+    description_max_chars: int | None = None,
+) -> list[dict]:
     media_ids = [row.id for row in rows]
     tag_map = _tags_for_media_ids(session, media_ids)
-    return [{**_media_to_dict(row), "tags": tag_map.get(row.id, [])} for row in rows]
+    return [
+        {
+            **_media_to_dict(
+                row,
+                include_full_payload=include_full_payload,
+                description_max_chars=description_max_chars,
+            ),
+            "tags": tag_map.get(row.id, []),
+        }
+        for row in rows
+    ]
 
 
 def _parse_datetime_filter(raw_value: str | None, *, end_of_day: bool) -> datetime | None:
@@ -190,7 +234,13 @@ def upload_media():
             job = queue_media_for_processing(session, item)
             if settings.enable_processing:
                 get_processing_coordinator().enqueue(job.id)
-            created.append(_media_to_dict(item))
+            created.append(
+                _media_to_dict(
+                    item,
+                    include_full_payload=False,
+                    description_max_chars=_MEDIA_LIST_DESCRIPTION_MAX_CHARS,
+                )
+            )
         session.commit()
         return jsonify({"items": created, "archives": imported_archives})
     finally:
@@ -239,7 +289,16 @@ def list_media():
             rows = ordered_query.limit(limit).all()
         else:
             rows = ordered_query.all()
-        return jsonify({"items": _serialize_media_list(session, rows)})
+        return jsonify(
+            {
+                "items": _serialize_media_list(
+                    session,
+                    rows,
+                    include_full_payload=False,
+                    description_max_chars=_MEDIA_LIST_DESCRIPTION_MAX_CHARS,
+                )
+            }
+        )
     finally:
         session.close()
 
@@ -252,8 +311,7 @@ def get_media(media_id: str):
         item = session.get(MediaItem, media_id)
         if item is None or not _check_media_access(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
-        tag_map = _tags_for_media_ids(session, [media_id])
-        return jsonify({"item": {**_media_to_dict(item), "tags": tag_map.get(media_id, [])}})
+        return jsonify({"item": _serialize_media_item(session, item, include_full_payload=True)})
     finally:
         session.close()
 
@@ -344,7 +402,7 @@ def update_media(media_id: str):
         session.commit()
         get_tag_description_coordinator().notify_backfill_needed()
         refreshed = session.get(MediaItem, media_id)
-        return jsonify({"item": _serialize_media_list(session, [refreshed])[0]})
+        return jsonify({"item": _serialize_media_item(session, refreshed, include_full_payload=True)})
     finally:
         session.close()
 

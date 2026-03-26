@@ -5,6 +5,7 @@ import queue
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 
 from app.config import settings
 from app.db.session import SessionLocal
@@ -13,6 +14,7 @@ from app.services.ai_limit_guard import is_ai_proxy_sleep_active
 from app.services.ai_proxy import AIProxyLimitCooldownError, ai_proxy_service
 from app.services.audit import audit
 from app.services.memory_guard import evaluate_processing_memory_guard
+from app.services.processor_monitor import touch_processor_heartbeat
 from app.services.runtime_config import get_runtime_value
 from app.services.storage import queue_media_for_processing
 from app.services.tag_catalog import get_tag_description_coordinator
@@ -85,6 +87,8 @@ class ProcessingCoordinator:
         self._desired_workers = 0
         self._lock = threading.Lock()
         self._booted = False
+        self._heartbeat_thread: threading.Thread | None = None
+        self._heartbeat_stop = threading.Event()
 
     def boot(self) -> None:
         if self._booted:
@@ -93,6 +97,7 @@ class ProcessingCoordinator:
         recovered_jobs = self._recover_inflight_jobs()
         self._enqueue_existing_jobs()
         self.set_desired_workers(int(get_runtime_value("processing_workers")))
+        self._start_heartbeat()
         if recovered_jobs:
             audit(
                 "processing.recovered_inflight",
@@ -159,6 +164,41 @@ class ProcessingCoordinator:
             self._workers = {worker_id: thread for worker_id, thread in self._workers.items() if thread.is_alive()}
             self._worker_stops = {worker_id: stop for worker_id, stop in self._worker_stops.items() if worker_id in self._workers}
             return len(self._workers)
+
+    def processor_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            self._workers = {worker_id: thread for worker_id, thread in self._workers.items() if thread.is_alive()}
+            self._worker_stops = {worker_id: stop for worker_id, stop in self._worker_stops.items() if worker_id in self._workers}
+            workers = len(self._workers)
+            desired_workers = self._desired_workers
+            queued_jobs = len(self._queued_job_ids)
+        with self._processing_slots:
+            active_load = self._active_load
+        return {
+            "workers": workers,
+            "desired_workers": desired_workers,
+            "active_load": active_load,
+            "queue_size": queued_jobs,
+        }
+
+    def _start_heartbeat(self) -> None:
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="processor-heartbeat", daemon=True)
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        next_tick = 0.0
+        while not self._heartbeat_stop.wait(1.0):
+            now = monotonic()
+            if now < next_tick:
+                continue
+            next_tick = now + 10.0
+            try:
+                touch_processor_heartbeat(**self.processor_snapshot())
+            except Exception:
+                continue
 
     def notify_capacity_changed(self) -> None:
         with self._processing_slots:

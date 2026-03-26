@@ -73,7 +73,7 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
     "processing_memory_resume_available_mb": RuntimeConfigSpec(
         key="processing_memory_resume_available_mb",
         label="Memory resume threshold MB",
-        description="Когда доступная память снова поднимается выше этого порога, memory guard снимается и обработка продолжается автоматически.",
+        description="Когда доступная память снова поднимается выше этого порога, memory guard снимается и обработка продолжается автоматически. На очень маленьких VPS effective threshold может быть автоматически снижен, чтобы processor не застревал в паузе навсегда.",
         kind="integer",
         default=settings.processing_memory_resume_available_mb,
         min_value=128,

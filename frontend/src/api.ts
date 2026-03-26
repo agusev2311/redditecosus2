@@ -95,6 +95,10 @@ export function listMedia(token: string, params: Record<string, string | undefin
   return request<{ items: MediaItem[] }>(url, {}, token)
 }
 
+export function getMedia(token: string, mediaId: string) {
+  return request<{ item: MediaItem }>(`/api/media/${mediaId}`, {}, token)
+}
+
 export function updateMedia(token: string, mediaId: string, payload: { description?: string; safety_rating?: string; safety_tags?: string[] }) {
   return request<{ item: MediaItem }>(
     `/api/media/${mediaId}`,

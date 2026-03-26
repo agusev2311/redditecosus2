@@ -1,0 +1,14 @@
+Flask==3.1.1
+Flask-Cors==6.0.1
+SQLAlchemy==2.0.40
+PyJWT==2.10.1
+python-dotenv==1.1.0
+httpx==0.28.1
+Pillow==11.2.1
+opencv-python-headless==4.11.0.86
+python-magic==0.4.27
+py7zr==0.22.0
+rarfile==4.2
+python-telegram-bot==22.1
+tzdata==2025.2
+

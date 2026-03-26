@@ -3,7 +3,8 @@ services:
     build:
       context: ./backend
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        format: raw
     environment:
       APP_ENV: production
       APP_DATA_ROOT: /app/data
@@ -52,7 +53,8 @@ services:
       context: ./backend
     command: ["python", "telegram_bot.py"]
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        format: raw
     environment:
       APP_ENV: production
       APP_DATA_ROOT: /app/data

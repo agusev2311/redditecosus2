@@ -11,6 +11,7 @@ from app.services.archive import cleanup_archive_staging
 from app.services.audit import configure_logging
 from app.services.processing import get_processing_coordinator
 from app.services.storage import ensure_storage_layout
+from app.services.tag_catalog import get_tag_description_coordinator
 
 
 def create_app() -> Flask:
@@ -30,4 +31,5 @@ def create_app() -> Flask:
     should_boot_workers = settings.env != "development" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if settings.enable_processing and should_boot_workers:
         get_processing_coordinator().boot()
+        get_tag_description_coordinator().boot()
     return app

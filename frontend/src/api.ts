@@ -1,4 +1,4 @@
-import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, UploadResponse, User } from './types'
+import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, TagCatalogPayload, TriggerTagBackfillResponse, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -95,6 +95,17 @@ export function listMedia(token: string, params: Record<string, string | undefin
   return request<{ items: MediaItem[] }>(url, {}, token)
 }
 
+export function updateMedia(token: string, mediaId: string, payload: { description?: string; safety_rating?: string; safety_tags?: string[] }) {
+  return request<{ item: MediaItem }>(
+    `/api/media/${mediaId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+    token,
+  )
+}
+
 export function listJobs(token: string) {
   return request<{ items: JobItem[] }>('/api/jobs', {}, token)
 }
@@ -184,6 +195,21 @@ export function createUser(token: string, payload: { username: string; password:
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    },
+    token,
+  )
+}
+
+export function listTags(token: string, params: Record<string, string | undefined>) {
+  const url = buildUrl('/api/tags', params)
+  return request<TagCatalogPayload>(url, {}, token)
+}
+
+export function triggerTagBackfill(token: string) {
+  return request<TriggerTagBackfillResponse>(
+    '/api/tags/backfill-missing',
+    {
+      method: 'POST',
     },
     token,
   )

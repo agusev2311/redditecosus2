@@ -113,7 +113,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-width: 0;
   color: var(--text);
@@ -124,8 +125,14 @@ select {
   outline: none;
 }
 
+textarea {
+  resize: vertical;
+  min-height: 110px;
+}
+
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: rgba(185, 137, 255, 0.38);
   box-shadow: 0 0 0 4px rgba(185, 137, 255, 0.12);
 }
@@ -186,6 +193,7 @@ select:focus {
 .workspace-subtitle,
 .gallery-body p,
 .list-row small,
+.tag-row-copy small,
 .brand-copy small,
 .sidebar-tab-copy small,
 .sidebar-metric small {
@@ -447,7 +455,9 @@ button:disabled {
 
 .hero-grid,
 .split-stack,
-.queue-stat-grid {
+.queue-stat-grid,
+.feed-stack,
+.tag-catalog-grid {
   display: grid;
   gap: var(--space-lg);
 }
@@ -694,6 +704,91 @@ button:disabled {
   gap: var(--space-md);
 }
 
+.feed-stack {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.feed-card {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+
+.feed-preview {
+  display: grid;
+  place-items: center;
+  min-height: 320px;
+  max-height: min(70vh, 760px);
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.feed-preview img,
+.feed-preview video {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(66vh, 720px);
+  object-fit: contain;
+}
+
+.feed-body,
+.tag-row-copy {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.feed-body {
+  padding: 1.35rem;
+}
+
+.feed-description {
+  line-height: 1.75;
+}
+
+.tag-catalog-grid {
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+}
+
+.tag-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-lg);
+  background: var(--panel-soft);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-align: left;
+}
+
+.tag-row.active,
+.tag-row:hover {
+  background: var(--panel-hover);
+  border-color: rgba(185, 137, 255, 0.32);
+}
+
+.tag-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.detail-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: 0.5rem;
+  line-height: 1.6;
+}
+
+.safety-form {
+  align-items: start;
+}
+
 .storage-bar-card,
 .storage-legend-item {
   display: grid;
@@ -864,7 +959,8 @@ button:disabled {
 @media (max-width: 1380px) {
   .hero-grid,
   .page-grid,
-  .modal-grid {
+  .modal-grid,
+  .tag-catalog-grid {
     grid-template-columns: 1fr;
   }
 }

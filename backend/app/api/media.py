@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+from datetime import date, datetime, time, timezone
+
 from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy import or_
 
 from app.config import settings
 from app.db.session import SessionLocal
-from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, Tag
+from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, SafetyRating, Tag, TagKind, TagOrigin
+from app.services.analysis_enrichment import normalize_tag_name
 from app.services.archive import ingest_archive
 from app.services.audit import audit
 from app.services.media_probe import detect_file_type
 from app.services.processing import enqueue_media, get_processing_coordinator
 from app.services.storage import absolute_media_path, absolute_thumbnail_path, queue_media_for_processing, save_uploaded_media
+from app.services.tag_catalog import get_tag_description_coordinator
 from app.utils.auth import login_required
 
 
 media_bp = Blueprint("media", __name__)
+
+_RATING_TAGS = {rating.value for rating in SafetyRating}
 
 
 def _media_to_dict(item: MediaItem) -> dict:
@@ -46,6 +52,111 @@ def _media_to_dict(item: MediaItem) -> dict:
         "ai_payload": item.ai_payload,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }
+
+
+def _tags_for_media_ids(session, media_ids: list[str]) -> dict[str, list[dict]]:
+    tag_rows = (
+        session.query(MediaTag.media_id, Tag.name, Tag.kind)
+        .join(Tag, Tag.id == MediaTag.tag_id)
+        .filter(MediaTag.media_id.in_(media_ids))
+        .order_by(MediaTag.created_at.asc())
+        .all()
+        if media_ids
+        else []
+    )
+    tag_map: dict[str, list[dict]] = {}
+    for media_id, name, kind in tag_rows:
+        tag_map.setdefault(media_id, []).append({"name": name, "kind": kind.value})
+    return tag_map
+
+
+def _serialize_media_list(session, rows: list[MediaItem]) -> list[dict]:
+    media_ids = [row.id for row in rows]
+    tag_map = _tags_for_media_ids(session, media_ids)
+    return [{**_media_to_dict(row), "tags": tag_map.get(row.id, [])} for row in rows]
+
+
+def _parse_datetime_filter(raw_value: str | None, *, end_of_day: bool) -> datetime | None:
+    if not raw_value:
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    if len(value) == 10:
+        parsed_date = date.fromisoformat(value)
+        parsed_time = time.max if end_of_day else time.min
+        return datetime.combine(parsed_date, parsed_time, tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _normalize_manual_safety_tags(raw_tags: list[str], rating: SafetyRating | None) -> list[str]:
+    desired: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in raw_tags:
+        name = normalize_tag_name(raw_tag)
+        if not name:
+            continue
+        if name in _RATING_TAGS and rating is not None and name != rating.value:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        desired.append(name)
+    if rating is not None and rating.value != SafetyRating.unknown.value and rating.value not in seen:
+        desired.insert(0, rating.value)
+    return desired
+
+
+def _sync_safety_tags(session, item: MediaItem, rating: SafetyRating | None, safety_tags: list[str] | None) -> list[str]:
+    current_safety_names = [
+        tag.name
+        for tag in session.query(Tag)
+        .join(MediaTag, MediaTag.tag_id == Tag.id)
+        .filter(MediaTag.media_id == item.id, Tag.kind == TagKind.safety)
+        .order_by(Tag.name.asc())
+        .all()
+    ]
+    effective_rating = rating
+    requested_tags = safety_tags if safety_tags is not None else current_safety_names
+
+    if effective_rating is None:
+        for candidate in requested_tags:
+            normalized = normalize_tag_name(candidate)
+            if normalized in _RATING_TAGS:
+                effective_rating = SafetyRating(normalized)
+                break
+    if effective_rating is None:
+        effective_rating = item.safety_rating
+
+    desired_names = _normalize_manual_safety_tags(requested_tags, effective_rating)
+
+    current_links = (
+        session.query(MediaTag)
+        .join(Tag, Tag.id == MediaTag.tag_id)
+        .filter(MediaTag.media_id == item.id, Tag.kind == TagKind.safety)
+        .all()
+    )
+    for link in current_links:
+        session.delete(link)
+
+    for name in desired_names:
+        tag = session.query(Tag).filter_by(owner_id=item.owner_id, name=name, kind=TagKind.safety).first()
+        if tag is None:
+            tag = Tag(owner_id=item.owner_id, name=name, kind=TagKind.safety)
+            session.add(tag)
+            session.flush()
+        session.add(MediaTag(media_id=item.id, tag_id=tag.id, origin=TagOrigin.manual))
+
+    item.safety_rating = effective_rating
+    if isinstance(item.ai_payload, dict):
+        payload = dict(item.ai_payload)
+        payload["safety_rating"] = item.safety_rating.value
+        payload["safety_tags"] = desired_names
+        item.ai_payload = payload
+    return desired_names
 
 
 def _check_media_access(item: MediaItem, user) -> bool:
@@ -114,21 +225,16 @@ def list_media():
             query = query.filter(MediaItem.safety_rating == request.args["rating"])
         if request.args.get("status"):
             query = query.filter(MediaItem.processing_status == request.args["status"])
+        created_from = _parse_datetime_filter(request.args.get("created_from"), end_of_day=False)
+        if created_from is not None:
+            query = query.filter(MediaItem.created_at >= created_from)
+        created_to = _parse_datetime_filter(request.args.get("created_to"), end_of_day=True)
+        if created_to is not None:
+            query = query.filter(MediaItem.created_at <= created_to)
 
-        rows = query.distinct().order_by(MediaItem.created_at.desc()).limit(300).all()
-        media_ids = [row.id for row in rows]
-        tag_rows = (
-            session.query(MediaTag.media_id, Tag.name, Tag.kind)
-            .join(Tag, Tag.id == MediaTag.tag_id)
-            .filter(MediaTag.media_id.in_(media_ids))
-            .all()
-            if media_ids
-            else []
-        )
-        tag_map: dict[str, list[dict]] = {}
-        for media_id, name, kind in tag_rows:
-            tag_map.setdefault(media_id, []).append({"name": name, "kind": kind.value})
-        return jsonify({"items": [{**_media_to_dict(row), "tags": tag_map.get(row.id, [])} for row in rows]})
+        limit = max(1, min(int(request.args.get("limit") or 300), 600))
+        rows = query.distinct().order_by(MediaItem.created_at.desc()).limit(limit).all()
+        return jsonify({"items": _serialize_media_list(session, rows)})
     finally:
         session.close()
 
@@ -141,13 +247,8 @@ def get_media(media_id: str):
         item = session.get(MediaItem, media_id)
         if item is None or not _check_media_access(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
-        tag_rows = (
-            session.query(Tag.name, Tag.kind)
-            .join(MediaTag, MediaTag.tag_id == Tag.id)
-            .filter(MediaTag.media_id == media_id)
-            .all()
-        )
-        return jsonify({"item": _media_to_dict(item), "tags": [{"name": name, "kind": kind.value} for name, kind in tag_rows]})
+        tag_map = _tags_for_media_ids(session, [media_id])
+        return jsonify({"item": {**_media_to_dict(item), "tags": tag_map.get(media_id, [])}})
     finally:
         session.close()
 
@@ -219,10 +320,26 @@ def update_media(media_id: str):
             return jsonify({"error": "Not found"}), 404
         if "description" in payload:
             item.description = payload["description"]
-        if "safety_rating" in payload:
-            item.safety_rating = payload["safety_rating"]
+        parsed_rating = SafetyRating(payload["safety_rating"]) if "safety_rating" in payload and payload["safety_rating"] else None
+        parsed_safety_tags = None
+        if "safety_tags" in payload:
+            raw_value = payload.get("safety_tags") or []
+            if not isinstance(raw_value, list):
+                return jsonify({"error": "safety_tags must be a list"}), 400
+            parsed_safety_tags = [str(value) for value in raw_value]
+        if parsed_rating is not None or parsed_safety_tags is not None:
+            normalized_tags = _sync_safety_tags(session, item, parsed_rating, parsed_safety_tags)
+            audit(
+                "media.safety_updated",
+                f"Updated safety metadata for {item.original_filename}",
+                actor_id=g.current_user.id,
+                owner_id=item.owner_id,
+                context={"media_id": item.id, "rating": item.safety_rating.value, "safety_tags": normalized_tags},
+            )
         session.commit()
-        return jsonify({"item": _media_to_dict(item)})
+        get_tag_description_coordinator().notify_backfill_needed()
+        refreshed = session.get(MediaItem, media_id)
+        return jsonify({"item": _serialize_media_list(session, [refreshed])[0]})
     finally:
         session.close()
 

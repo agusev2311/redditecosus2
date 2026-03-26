@@ -16,6 +16,31 @@ export interface MediaTag {
   kind: 'semantic' | 'technical' | 'safety'
 }
 
+export interface TagCatalogItem {
+  id: number
+  owner_id: number
+  name: string
+  kind: 'semantic' | 'technical' | 'safety'
+  usage_count: number
+  description_ru?: string | null
+  description_en?: string | null
+  details_payload?: Record<string, unknown> | null
+  ai_described_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  is_described: boolean
+}
+
+export interface TagCatalogPayload {
+  items: TagCatalogItem[]
+  leaderboard: TagCatalogItem[]
+  counts: {
+    total: number
+    described: number
+    pending: number
+  }
+}
+
 export interface MediaItem {
   id: string
   kind: MediaKind
@@ -193,4 +218,10 @@ export interface DangerResetResponse {
   user_count: number
   message: string
   confirmation_phrase: string
+}
+
+export interface TriggerTagBackfillResponse {
+  pending_tags: number
+  started: boolean
+  message: string
 }

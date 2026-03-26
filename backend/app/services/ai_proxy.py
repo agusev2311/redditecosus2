@@ -13,7 +13,7 @@ from app.config import _normalize_ai_proxy_base_url, settings
 from app.db.session import new_session
 from app.models import MediaItem, MediaTag, Tag, TagKind
 from app.services.ai_limit_guard import is_ai_proxy_limit_status, trigger_ai_proxy_limit_sleep
-from app.services.analysis_enrichment import enrich_analysis_tags
+from app.services.analysis_enrichment import enrich_analysis_tags, normalize_tag_name
 from app.services.media_probe import extract_frames_for_model, probe_media, technical_tags
 from app.services.runtime_config import get_runtime_config_map
 from app.services.storage import absolute_media_path
@@ -106,6 +106,79 @@ ANALYSIS_SCHEMA = {
 }
 
 
+TAG_DESCRIPTION_PROMPT = """
+You are building a high-quality tag catalog for a private multimedia archive. Each tag is used for search, discovery, moderation, and memory recall.
+
+Your job is to explain one existing tag in detail and return strict JSON.
+
+Rules:
+- The canonical tag name is already decided. Do not rename it.
+- Write descriptions in two languages:
+  - description_ru: Russian
+  - description_en: English
+- Keep aliases, parent categories, and related tags in English only.
+- Do not hallucinate niche facts. If a tag is ambiguous, explicitly say that in the descriptions and notes.
+- Use the provided usage count and co-occurring tags as hints about how the tag is used in this archive.
+- Explain what the tag usually means, what visual traits it implies, how it differs from nearby tags, and where it is likely to appear.
+- For safety or moderation tags, mention moderation implications.
+- For technical tags, explain rendering/format/quality implications.
+- For fandom or character tags, mention recognizable traits, franchise/source, and common visual context when justified.
+
+Output contract:
+- description_ru: detailed Russian explanation of the tag.
+- description_en: detailed English explanation of the tag.
+- aliases: English aliases or close alternate names.
+- parent_categories: broader parent tags or umbrellas.
+- related_tags: nearby or often co-occurring tags.
+- distinguishing_features: short English bullet-like phrases describing typical defining traits.
+- common_contexts: short English bullet-like phrases describing where this tag appears.
+- search_hints: short English search clues or phrase fragments that help rediscover the content.
+- moderation_notes_ru: Russian moderation note.
+- moderation_notes_en: English moderation note.
+- ambiguity_note_ru: Russian note if the tag can be ambiguous, otherwise empty string.
+- ambiguity_note_en: English note if the tag can be ambiguous, otherwise empty string.
+- confidence: number from 0 to 1.
+
+Return JSON only.
+""".strip()
+
+
+TAG_DESCRIPTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description_ru": {"type": "string"},
+        "description_en": {"type": "string"},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "parent_categories": {"type": "array", "items": {"type": "string"}},
+        "related_tags": {"type": "array", "items": {"type": "string"}},
+        "distinguishing_features": {"type": "array", "items": {"type": "string"}},
+        "common_contexts": {"type": "array", "items": {"type": "string"}},
+        "search_hints": {"type": "array", "items": {"type": "string"}},
+        "moderation_notes_ru": {"type": "string"},
+        "moderation_notes_en": {"type": "string"},
+        "ambiguity_note_ru": {"type": "string"},
+        "ambiguity_note_en": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": [
+        "description_ru",
+        "description_en",
+        "aliases",
+        "parent_categories",
+        "related_tags",
+        "distinguishing_features",
+        "common_contexts",
+        "search_hints",
+        "moderation_notes_ru",
+        "moderation_notes_en",
+        "ambiguity_note_ru",
+        "ambiguity_note_en",
+        "confidence",
+    ],
+    "additionalProperties": False,
+}
+
+
 class AIProxyService:
     def __init__(self) -> None:
         self._concurrency_condition = threading.Condition()
@@ -162,6 +235,78 @@ class AIProxyService:
             text = response.text
         return f"{response.request.method} {response.request.url} -> HTTP {response.status_code}: {' '.join(text.split())[:1200]}"
 
+    def _request_structured_json(
+        self,
+        *,
+        runtime_config: dict[str, Any],
+        system_prompt: str,
+        schema_name: str,
+        schema: dict[str, Any],
+        messages: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any], httpx.Response, float, float]:
+        payload = {
+            "model": runtime_config["ai_proxy_model"],
+            "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
+            "stream": False,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *messages,
+            ],
+        }
+
+        verify: bool | str = bool(runtime_config["ai_proxy_verify_tls"])
+        if runtime_config["ai_proxy_ca_bundle"]:
+            verify = str(runtime_config["ai_proxy_ca_bundle"])
+
+        with self._acquire_request_slot(int(runtime_config["ai_proxy_max_concurrency"])) as slot_wait_seconds:
+            started = perf_counter()
+            with httpx.Client(timeout=int(runtime_config["ai_proxy_timeout_seconds"]), verify=verify) as client:
+                response = client.post(
+                    f"{_normalize_ai_proxy_base_url(str(runtime_config['ai_proxy_base_url'])).rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.ai_proxy_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+        elapsed = round(perf_counter() - started, 3)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if is_ai_proxy_limit_status(status_code):
+                state = trigger_ai_proxy_limit_sleep(status_code, self._build_http_error_detail(exc.response))
+                raise AIProxyLimitCooldownError(
+                    status_code=status_code,
+                    sleep_until=state["sleep_until"],
+                    detail=state.get("last_error") or "",
+                ) from exc
+            raise
+
+        body = response.json()
+        content_text = body["choices"][0]["message"]["content"]
+        parsed = json.loads(content_text)
+        return parsed, body, response, elapsed, slot_wait_seconds
+
+    def _normalize_tag_list(self, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_name in values:
+            name = normalize_tag_name(raw_name)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
+
     def analyze_media(self, media: MediaItem) -> dict[str, Any]:
         runtime_config = get_runtime_config_map()
         path = absolute_media_path(media)
@@ -203,55 +348,13 @@ class AIProxyService:
                 }
             )
 
-        payload = {
-            "model": runtime_config["ai_proxy_model"],
-            "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
-            "stream": False,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "media_analysis",
-                    "strict": True,
-                    "schema": ANALYSIS_SCHEMA,
-                },
-            },
-            "messages": [
-                {"role": "system", "content": ANALYSIS_PROMPT},
-                {"role": "user", "content": content},
-            ],
-        }
-
-        verify: bool | str = bool(runtime_config["ai_proxy_verify_tls"])
-        if runtime_config["ai_proxy_ca_bundle"]:
-            verify = str(runtime_config["ai_proxy_ca_bundle"])
-
-        with self._acquire_request_slot(int(runtime_config["ai_proxy_max_concurrency"])) as slot_wait_seconds:
-            started = perf_counter()
-            with httpx.Client(timeout=int(runtime_config["ai_proxy_timeout_seconds"]), verify=verify) as client:
-                response = client.post(
-                    f"{_normalize_ai_proxy_base_url(str(runtime_config['ai_proxy_base_url'])).rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {settings.ai_proxy_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-        elapsed = round(perf_counter() - started, 3)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code
-            if is_ai_proxy_limit_status(status_code):
-                state = trigger_ai_proxy_limit_sleep(status_code, self._build_http_error_detail(exc.response))
-                raise AIProxyLimitCooldownError(
-                    status_code=status_code,
-                    sleep_until=state["sleep_until"],
-                    detail=state.get("last_error") or "",
-                ) from exc
-            raise
-        body = response.json()
-        content_text = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content_text)
+        parsed, body, response, elapsed, slot_wait_seconds = self._request_structured_json(
+            runtime_config=runtime_config,
+            system_prompt=ANALYSIS_PROMPT,
+            schema_name="media_analysis",
+            schema=ANALYSIS_SCHEMA,
+            messages=[{"role": "user", "content": content}],
+        )
         usage = body.get("usage") or {}
         description_ru = str(parsed.get("description_ru", "")).strip()
         description_en = str(parsed.get("description_en", "")).strip()
@@ -269,6 +372,55 @@ class AIProxyService:
             "slot_wait_seconds": slot_wait_seconds,
             "ai_max_concurrency": int(runtime_config["ai_proxy_max_concurrency"]),
             "frame_count": len(frames),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+        }
+        return parsed
+
+    def describe_tag(
+        self,
+        *,
+        tag_name: str,
+        tag_kind: TagKind,
+        usage_count: int,
+        cooccurring_tags: list[str],
+    ) -> dict[str, Any]:
+        runtime_config = get_runtime_config_map()
+        parsed, body, response, elapsed, slot_wait_seconds = self._request_structured_json(
+            runtime_config=runtime_config,
+            system_prompt=TAG_DESCRIPTION_PROMPT,
+            schema_name="tag_description",
+            schema=TAG_DESCRIPTION_SCHEMA,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "\n".join(
+                        [
+                            f"tag_name: {tag_name}",
+                            f"tag_kind: {tag_kind.value}",
+                            f"usage_count_in_archive: {usage_count}",
+                            f"top_cooccurring_tags: {', '.join(cooccurring_tags)}",
+                            "Describe the canonical tag in detail without changing its identity.",
+                        ]
+                    ),
+                }
+            ],
+        )
+        usage = body.get("usage") or {}
+        parsed["description_ru"] = str(parsed.get("description_ru", "")).strip()
+        parsed["description_en"] = str(parsed.get("description_en", "")).strip()
+        parsed["aliases"] = self._normalize_tag_list(list(parsed.get("aliases", [])))
+        parsed["parent_categories"] = self._normalize_tag_list(list(parsed.get("parent_categories", [])))
+        parsed["related_tags"] = self._normalize_tag_list(list(parsed.get("related_tags", [])))
+        parsed["x_request_id"] = response.headers.get("x-request-id")
+        parsed["x_metrics"] = {
+            "model": body.get("model") or runtime_config["ai_proxy_model"],
+            "reasoning_effort": runtime_config["ai_proxy_reasoning_effort"],
+            "ai_seconds": elapsed,
+            "slot_wait_seconds": slot_wait_seconds,
+            "ai_max_concurrency": int(runtime_config["ai_proxy_max_concurrency"]),
+            "usage_count": usage_count,
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
             "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),

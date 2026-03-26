@@ -12,6 +12,7 @@ from app.services.ai_proxy import AIProxyLimitCooldownError, ai_proxy_service
 from app.services.audit import audit
 from app.services.runtime_config import get_runtime_value
 from app.services.storage import queue_media_for_processing
+from app.services.tag_catalog import get_tag_description_coordinator
 from app.utils.datetimes import seconds_between
 
 
@@ -229,6 +230,7 @@ class ProcessingCoordinator:
             }
             media.processing_status = ProcessingStatus.complete
             session.commit()
+            get_tag_description_coordinator().notify_backfill_needed()
             audit(
                 "media.indexed",
                 f"Indexed media {media.original_filename}",

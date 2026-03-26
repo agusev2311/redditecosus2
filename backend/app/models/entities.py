@@ -171,7 +171,12 @@ class Tag(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(120), index=True)
     kind: Mapped[TagKind] = mapped_column(SqlEnum(TagKind), index=True)
+    description_ru: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_en: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    ai_described_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class MediaTag(Base):

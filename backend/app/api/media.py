@@ -232,8 +232,13 @@ def list_media():
         if created_to is not None:
             query = query.filter(MediaItem.created_at <= created_to)
 
-        limit = max(1, min(int(request.args.get("limit") or 300), 600))
-        rows = query.distinct().order_by(MediaItem.created_at.desc()).limit(limit).all()
+        limit_raw = (request.args.get("limit") or "").strip()
+        ordered_query = query.distinct().order_by(MediaItem.created_at.desc())
+        if limit_raw:
+            limit = max(1, min(int(limit_raw), 2000))
+            rows = ordered_query.limit(limit).all()
+        else:
+            rows = ordered_query.all()
         return jsonify({"items": _serialize_media_list(session, rows)})
     finally:
         session.close()

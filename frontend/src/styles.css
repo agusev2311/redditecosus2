@@ -335,7 +335,7 @@ button:disabled {
 }
 
 .sidebar-collapsed {
-  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-columns: 120px minmax(0, 1fr);
 }
 
 .sidebar-backdrop {
@@ -449,6 +449,52 @@ button:disabled {
 
 .sidebar-foot {
   margin-top: auto;
+}
+
+.sidebar-collapsed .app-sidebar {
+  gap: var(--space-md);
+  padding: 1rem 0.75rem;
+  overflow-x: hidden;
+}
+
+.sidebar-collapsed .sidebar-top {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+}
+
+.sidebar-collapsed .brand-lockup,
+.sidebar-collapsed .sidebar-controls {
+  justify-content: center;
+}
+
+.sidebar-collapsed .brand-mark,
+.sidebar-collapsed .sidebar-tab-mark {
+  width: 56px;
+  height: 56px;
+  flex-basis: 56px;
+}
+
+.sidebar-collapsed .sidebar-nav,
+.sidebar-collapsed .sidebar-foot {
+  width: 100%;
+  justify-items: center;
+}
+
+.sidebar-collapsed .sidebar-tab {
+  justify-content: center;
+  padding: 0.75rem 0.5rem;
+}
+
+.sidebar-collapsed .sidebar-foot {
+  gap: 0.5rem;
+}
+
+.sidebar-collapsed .sidebar-foot .secondary-button,
+.sidebar-collapsed .sidebar-foot .ghost-button {
+  width: 100%;
+  min-height: 40px;
+  padding: 0.6rem;
 }
 
 .desktop-only {

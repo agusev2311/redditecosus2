@@ -114,7 +114,7 @@ function SidebarTab({
   onClick: () => void
 }) {
   return (
-    <button className={`sidebar-tab ${active ? 'active' : ''}`} type="button" onClick={onClick}>
+    <button className={`sidebar-tab ${active ? 'active' : ''}`} type="button" onClick={onClick} title={collapsed ? label : undefined} aria-label={label}>
       <span className="sidebar-tab-mark">{short}</span>
       {!collapsed ? (
         <span className="sidebar-tab-copy">
@@ -422,14 +422,16 @@ export function AppSidebar({
           ) : null}
         </div>
         <div className="sidebar-controls">
-          <button className="icon-button desktop-only" type="button" onClick={onToggleCollapse}>{sidebarCollapsed ? '>' : '<'}</button>
+          <button className="icon-button desktop-only" type="button" onClick={onToggleCollapse} title={sidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'} aria-label={sidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'}>{sidebarCollapsed ? '>' : '<'}</button>
           <button className="icon-button mobile-only" type="button" onClick={onCloseMobile}>x</button>
         </div>
       </div>
-      <div className="sidebar-summary">
-        <StatCard label="Всего медиа" value={counts.media} hint={`${counts.media_by_kind.image} img · ${counts.media_by_kind.gif} gif · ${counts.media_by_kind.video} video`} tone="accent" />
-        {!sidebarCollapsed ? <StatCard label="AI готово" value={`${aiCoverage}%`} hint={`queue ${backlogCount} · nsfw ${nsfwMedia}`} /> : null}
-      </div>
+      {!sidebarCollapsed ? (
+        <div className="sidebar-summary">
+          <StatCard label="Всего медиа" value={counts.media} hint={`${counts.media_by_kind.image} img · ${counts.media_by_kind.gif} gif · ${counts.media_by_kind.video} video`} tone="accent" />
+          <StatCard label="AI готово" value={`${aiCoverage}%`} hint={`queue ${backlogCount} · nsfw ${nsfwMedia}`} />
+        </div>
+      ) : null}
       <nav className="sidebar-nav">
         {tabs.map((tab) => (
           <SidebarTab
@@ -444,8 +446,8 @@ export function AppSidebar({
         ))}
       </nav>
       <div className="sidebar-foot">
-        <button className="secondary-button" type="button" onClick={onRefresh}>{sidebarCollapsed ? 'R' : 'Обновить'}</button>
-        <button className="ghost-button" type="button" onClick={onLogout}>{sidebarCollapsed ? 'X' : 'Выйти'}</button>
+        <button className="secondary-button" type="button" onClick={onRefresh} title={sidebarCollapsed ? 'Обновить' : undefined} aria-label="Обновить">{sidebarCollapsed ? 'R' : 'Обновить'}</button>
+        <button className="ghost-button" type="button" onClick={onLogout} title={sidebarCollapsed ? 'Выйти' : undefined} aria-label="Выйти">{sidebarCollapsed ? 'X' : 'Выйти'}</button>
       </div>
     </aside>
   )

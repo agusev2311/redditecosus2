@@ -60,6 +60,19 @@ def _copy_file_with_hash(source: Path, destination: Path) -> tuple[str, int]:
     return sha256.hexdigest(), total
 
 
+def _hash_existing_file(source: Path) -> tuple[str, int]:
+    sha256 = hashlib.sha256()
+    total = 0
+    with source.open("rb") as input_stream:
+        while True:
+            chunk = input_stream.read(1024 * 1024)
+            if not chunk:
+                break
+            sha256.update(chunk)
+            total += len(chunk)
+    return sha256.hexdigest(), total
+
+
 def _guess_mime_type(filename: str, kind: MediaKind) -> str:
     guessed, _ = mimetypes.guess_type(filename)
     if guessed:
@@ -178,6 +191,53 @@ def import_media_file(session, owner_id: int, source_path: Path, original_filena
     temp_path.rename(final_path)
     item.storage_path = str(final_path.relative_to(settings.storage_root))
     session.flush()
+    return item
+
+
+def save_staged_media(
+    session,
+    owner_id: int,
+    staged_path: Path,
+    original_filename: str,
+    *,
+    source_path: str | None = None,
+    archive_id: str | None = None,
+) -> MediaItem:
+    kind = detect_media_kind(original_filename)
+    if kind is None:
+        raise ValueError("Unsupported media type")
+
+    extension = Path(original_filename or staged_path.name).suffix.lower() or staged_path.suffix.lower() or ".bin"
+    digest, file_size = _hash_existing_file(staged_path)
+
+    existing = session.query(MediaItem).filter_by(owner_id=owner_id, sha256=digest).first()
+    if existing:
+        staged_path.unlink(missing_ok=True)
+        return existing
+
+    item = _make_media_item(
+        session=session,
+        owner_id=owner_id,
+        kind=kind,
+        original_filename=original_filename or staged_path.name,
+        source_path=source_path,
+        final_path=staged_path,
+        sha256=digest,
+        file_size=file_size,
+        archive_id=archive_id,
+    )
+    item_dir = _owner_dir(owner_id) / "items"
+    item_dir.mkdir(parents=True, exist_ok=True)
+    final_path = item_dir / f"{item.id}{extension}"
+    staged_path.replace(final_path)
+    item.storage_path = str(final_path.relative_to(settings.storage_root))
+    session.flush()
+    audit(
+        "media.uploaded",
+        f"Uploaded media {item.original_filename}",
+        owner_id=owner_id,
+        context={"media_id": item.id, "kind": item.kind.value},
+    )
     return item
 
 

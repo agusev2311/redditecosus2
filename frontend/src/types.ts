@@ -65,6 +65,12 @@ export interface MediaItem {
   tags?: MediaTag[]
 }
 
+export interface MediaListResponse {
+  items: MediaItem[]
+  has_more: boolean
+  next_cursor?: string | null
+}
+
 export interface JobItem {
   id: string
   media_id: string

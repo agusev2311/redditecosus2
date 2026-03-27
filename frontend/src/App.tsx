@@ -213,6 +213,14 @@ function parseTagInput(value: string) {
     .filter(Boolean)
 }
 
+function appendUniqueMedia(current: MediaItem[], incoming: MediaItem[]) {
+  if (!incoming.length) {
+    return current
+  }
+  const seen = new Set(current.map((item) => item.id))
+  return [...current, ...incoming.filter((item) => !seen.has(item.id))]
+}
+
 function toDateInputString(date: Date) {
   const year = date.getFullYear()
   const month = `${date.getMonth() + 1}`.padStart(2, '0')
@@ -488,6 +496,10 @@ function App() {
   const [overview, setOverview] = useState<OverviewPayload>(emptyOverview)
   const [media, setMedia] = useState<MediaItem[]>([])
   const [feedItems, setFeedItems] = useState<MediaItem[]>([])
+  const [mediaCursor, setMediaCursor] = useState<string | null>(null)
+  const [mediaHasMore, setMediaHasMore] = useState(false)
+  const [feedCursor, setFeedCursor] = useState<string | null>(null)
+  const [feedHasMore, setFeedHasMore] = useState(false)
   const [jobs, setJobs] = useState<JobItem[]>([])
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [storage, setStorage] = useState<DiskUsagePayload | null>(null)
@@ -514,6 +526,10 @@ function App() {
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [loadingMedia, setLoadingMedia] = useState(false)
+  const [loadingMoreMedia, setLoadingMoreMedia] = useState(false)
+  const [loadingFeed, setLoadingFeed] = useState(false)
+  const [loadingMoreFeed, setLoadingMoreFeed] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -545,76 +561,189 @@ function App() {
   useEffect(() => {
     if (!token || !currentUser) return
     let cancelled = false
-    const load = async () => {
+    const loadOverviewData = async () => {
       try {
-        const [
-          overviewPayload,
-          mediaPayload,
-          jobsPayload,
-          backupsPayload,
-          feedPayload,
-          tagPayload,
-          adminPayload,
-        ] = await Promise.all([
-          getOverview(token),
-          activeTab === 'library'
-            ? listMedia(token, { q: deferredSearch || undefined, kind: kindFilter || undefined, rating: ratingFilter || undefined, status: statusFilter || undefined })
-            : Promise.resolve(null),
-          activeTab === 'processing' ? listJobs(token) : Promise.resolve(null),
-          activeTab === 'backups' ? listBackups(token) : Promise.resolve(null),
-          activeTab === 'feed'
-            ? listMedia(token, {
-                created_from: feedFrom || undefined,
-                created_to: feedTo || undefined,
-                limit: '120',
-              })
-            : Promise.resolve(null),
-          activeTab === 'tags'
-            ? listTags(token, {
-                q: deferredTagSearch || undefined,
-                kind: tagKindFilter || undefined,
-                described: tagDescribedFilter || undefined,
-                limit: '240',
-              })
-            : Promise.resolve(null),
-          isAdmin && activeTab === 'admin'
-            ? Promise.all([getStorage(token), getUsers(token), getRuntimeConfig(token)])
-            : Promise.resolve(null),
-        ])
-        if (cancelled) return
-        setOverview(overviewPayload)
-        if (mediaPayload) setMedia(mediaPayload.items)
-        if (jobsPayload) setJobs(jobsPayload.items)
-        if (backupsPayload) setBackups(backupsPayload.items)
-        if (feedPayload) setFeedItems(feedPayload.items)
-        if (tagPayload) setTagCatalog(tagPayload)
-        if (adminPayload) {
-          const [storagePayload, usersPayload, runtimeConfigPayload] = adminPayload
-          setStorage(storagePayload)
-          setUsers(usersPayload.items)
-          setRuntimeConfig(runtimeConfigPayload.items)
-          setRuntimeConfigForm((current) => (
-            Object.keys(current).length
-              ? current
-              : Object.fromEntries(runtimeConfigPayload.items.map((item) => [item.key, configValueToInput(item.value)]))
-          ))
-        } else if (!isAdmin) {
-          setStorage(null)
-          setUsers([])
-          setRuntimeConfig([])
-          setRuntimeConfigForm({})
+        const overviewPayload = await getOverview(token)
+        if (!cancelled) {
+          setOverview(overviewPayload)
         }
       } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : 'Failed to refresh dashboard')
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : 'Failed to refresh dashboard')
+        }
       }
     }
-    void load()
-    const timer = window.setInterval(() => void load(), 12000)
+    void loadOverviewData()
+    const timer = window.setInterval(() => void loadOverviewData(), 12000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [token, currentUser, deferredSearch, kindFilter, ratingFilter, statusFilter, activeTab, deferredTagSearch, tagKindFilter, tagDescribedFilter, feedFrom, feedTo, refreshNonce, isAdmin])
+  }, [token, currentUser, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || activeTab !== 'library') return
+    const controller = new AbortController()
+    let cancelled = false
+    setLoadingMedia(true)
+    setLoadingMoreMedia(false)
+    const loadLibrary = async () => {
+      try {
+        const payload = await listMedia(
+          token,
+          {
+            q: deferredSearch || undefined,
+            kind: kindFilter || undefined,
+            rating: ratingFilter || undefined,
+            status: statusFilter || undefined,
+            limit: '48',
+          },
+          controller.signal,
+        )
+        if (cancelled) return
+        startTransition(() => setMedia(payload.items))
+        setMediaCursor(payload.next_cursor ?? null)
+        setMediaHasMore(payload.has_more)
+      } catch (reason) {
+        if (!cancelled && !controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : 'Failed to load library')
+        }
+      } finally {
+        if (!cancelled && !controller.signal.aborted) {
+          setLoadingMedia(false)
+        }
+      }
+    }
+    void loadLibrary()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [token, currentUser, activeTab, deferredSearch, kindFilter, ratingFilter, statusFilter, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || activeTab !== 'feed') return
+    const controller = new AbortController()
+    let cancelled = false
+    setLoadingFeed(true)
+    setLoadingMoreFeed(false)
+    const loadFeed = async () => {
+      try {
+        const payload = await listMedia(
+          token,
+          {
+            created_from: feedFrom || undefined,
+            created_to: feedTo || undefined,
+            limit: '36',
+          },
+          controller.signal,
+        )
+        if (cancelled) return
+        startTransition(() => setFeedItems(payload.items))
+        setFeedCursor(payload.next_cursor ?? null)
+        setFeedHasMore(payload.has_more)
+      } catch (reason) {
+        if (!cancelled && !controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : 'Failed to load feed')
+        }
+      } finally {
+        if (!cancelled && !controller.signal.aborted) {
+          setLoadingFeed(false)
+        }
+      }
+    }
+    void loadFeed()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [token, currentUser, activeTab, feedFrom, feedTo, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || activeTab !== 'processing') return
+    let cancelled = false
+    const loadProcessing = async () => {
+      try {
+        const jobsPayload = await listJobs(token)
+        if (!cancelled) {
+          setJobs(jobsPayload.items)
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : 'Failed to load processing queue')
+        }
+      }
+    }
+    void loadProcessing()
+    const timer = window.setInterval(() => void loadProcessing(), 12000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [token, currentUser, activeTab, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || activeTab !== 'backups') return
+    let cancelled = false
+    void listBackups(token).then((payload) => {
+      if (!cancelled) {
+        setBackups(payload.items)
+      }
+    }).catch((reason) => {
+      if (!cancelled) {
+        setError(reason instanceof Error ? reason.message : 'Failed to load backups')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, currentUser, activeTab, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || activeTab !== 'tags') return
+    let cancelled = false
+    void listTags(token, {
+      q: deferredTagSearch || undefined,
+      kind: tagKindFilter || undefined,
+      described: tagDescribedFilter || undefined,
+      limit: '240',
+    }).then((payload) => {
+      if (!cancelled) {
+        setTagCatalog(payload)
+      }
+    }).catch((reason) => {
+      if (!cancelled) {
+        setError(reason instanceof Error ? reason.message : 'Failed to load tags')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, currentUser, activeTab, deferredTagSearch, tagKindFilter, tagDescribedFilter, refreshNonce])
+  useEffect(() => {
+    if (!token || !currentUser || !isAdmin || activeTab !== 'admin') return
+    let cancelled = false
+    void Promise.all([getStorage(token), getUsers(token), getRuntimeConfig(token)]).then(([storagePayload, usersPayload, runtimeConfigPayload]) => {
+      if (cancelled) return
+      setStorage(storagePayload)
+      setUsers(usersPayload.items)
+      setRuntimeConfig(runtimeConfigPayload.items)
+      setRuntimeConfigForm((current) => (
+        Object.keys(current).length
+          ? current
+          : Object.fromEntries(runtimeConfigPayload.items.map((item) => [item.key, configValueToInput(item.value)]))
+      ))
+    }).catch((reason) => {
+      if (!cancelled) {
+        setError(reason instanceof Error ? reason.message : 'Failed to load admin dashboard')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, currentUser, isAdmin, activeTab, refreshNonce])
+  useEffect(() => {
+    if (isAdmin) return
+    setStorage(null)
+    setUsers([])
+    setRuntimeConfig([])
+    setRuntimeConfigForm({})
+  }, [isAdmin])
   useEffect(() => {
     if (!selectedMedia) return
     const refreshed = [...media, ...feedItems].find((item) => item.id === selectedMedia.id)
@@ -689,6 +818,48 @@ function App() {
     } finally {
       setUploading(false)
       window.setTimeout(() => setUploadProgress(0), 800)
+    }
+  }
+
+  const handleLoadMoreMedia = async () => {
+    if (!token || loadingMoreMedia || !mediaHasMore || !mediaCursor) return
+    setLoadingMoreMedia(true)
+    try {
+      const payload = await listMedia(token, {
+        q: deferredSearch || undefined,
+        kind: kindFilter || undefined,
+        rating: ratingFilter || undefined,
+        status: statusFilter || undefined,
+        limit: '48',
+        cursor: mediaCursor,
+      })
+      startTransition(() => setMedia((current) => appendUniqueMedia(current, payload.items)))
+      setMediaCursor(payload.next_cursor ?? null)
+      setMediaHasMore(payload.has_more)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to load more media')
+    } finally {
+      setLoadingMoreMedia(false)
+    }
+  }
+
+  const handleLoadMoreFeed = async () => {
+    if (!token || loadingMoreFeed || !feedHasMore || !feedCursor) return
+    setLoadingMoreFeed(true)
+    try {
+      const payload = await listMedia(token, {
+        created_from: feedFrom || undefined,
+        created_to: feedTo || undefined,
+        limit: '36',
+        cursor: feedCursor,
+      })
+      startTransition(() => setFeedItems((current) => appendUniqueMedia(current, payload.items)))
+      setFeedCursor(payload.next_cursor ?? null)
+      setFeedHasMore(payload.has_more)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to load more feed items')
+    } finally {
+      setLoadingMoreFeed(false)
     }
   }
 
@@ -837,6 +1008,14 @@ function App() {
         setRuntimeConfigForm({})
         setMedia([])
         setFeedItems([])
+        setMediaCursor(null)
+        setMediaHasMore(false)
+        setFeedCursor(null)
+        setFeedHasMore(false)
+        setLoadingMedia(false)
+        setLoadingMoreMedia(false)
+        setLoadingFeed(false)
+        setLoadingMoreFeed(false)
         setTagCatalog(emptyTagCatalog)
         setSelectedTag(null)
         setJobs([])
@@ -943,6 +1122,14 @@ function App() {
     setRuntimeConfigForm({})
     setMedia([])
     setFeedItems([])
+    setMediaCursor(null)
+    setMediaHasMore(false)
+    setFeedCursor(null)
+    setFeedHasMore(false)
+    setLoadingMedia(false)
+    setLoadingMoreMedia(false)
+    setLoadingFeed(false)
+    setLoadingMoreFeed(false)
     setTagCatalog(emptyTagCatalog)
     setSelectedTag(null)
     setJobs([])
@@ -1147,10 +1334,10 @@ function App() {
                   <div><span>Загрузка</span><h2>Загрузка медиа и архивов</h2></div>
                   <label className="primary-button file-button">Выбрать<input type="file" multiple onChange={handlePick} /></label>
                 </div>
-                <p className="lede">Поддерживаются изображения, GIF, видео и архивы с вложенными папками. После загрузки файлы сразу становятся в AI-очередь.</p>
+                <p className="lede">Поддерживаются изображения, GIF, видео и архивы с вложенными папками. Загрузка идет chunk-ами в несколько потоков, а при обрыве можно продолжить с уже принятых частей.</p>
                 <div className="dropzone-core">
                   <strong>{dragActive ? 'Отпускайте файлы сюда' : 'Перетащите сюда архивы, видео, GIF или изображения'}</strong>
-                  <small>Ограничения по размеру не задаются интерфейсом.</small>
+                  <small>Временные части лежат в staging и автоматически очищаются после импорта или по TTL.</small>
                 </div>
                 <div className="progress-block">
                   <div className="progress-track"><div className="progress-bar" style={{ width: `${uploadProgress}%` }} /></div>
@@ -1169,12 +1356,32 @@ function App() {
             </section>
             <section className="glass-panel gallery-panel">
               <div className="panel-head">
-                <div><span>Медиатека</span><h2>{media.length} результатов</h2></div>
+                <div><span>Медиатека</span><h2>{loadingMedia && media.length === 0 ? 'Загружаем первую порцию' : `${media.length}${mediaHasMore ? '+' : ''} результатов`}</h2></div>
                 <div className="chip-row"><span className="tag-chip">queued {queueCounts.queued}</span><span className="tag-chip">processing {queueCounts.processing}</span><span className="tag-chip">complete {queueCounts.complete}</span><span className="tag-chip">failed {queueCounts.failed}</span></div>
               </div>
               <div className="gallery-grid">
-                {media.length ? media.map((item) => <MediaCard key={item.id} item={item} token={token} active={selectedMedia?.id === item.id} onOpen={() => openMedia(item)} />) : <article className="glass-panel empty-state"><h2>Под текущие фильтры ничего не нашлось.</h2><p className="muted">Снимите часть фильтров или дождитесь, пока очередь доиндексирует свежие файлы.</p></article>}
+                {loadingMedia && media.length === 0 ? (
+                  <article className="glass-panel empty-state">
+                    <h2>Загружаем первую порцию медиа...</h2>
+                    <p className="muted">Список теперь приходит частями, поэтому интерфейс открывается быстрее даже на большой библиотеке.</p>
+                  </article>
+                ) : media.length ? (
+                  media.map((item) => <MediaCard key={item.id} item={item} token={token} active={selectedMedia?.id === item.id} onOpen={() => openMedia(item)} />)
+                ) : (
+                  <article className="glass-panel empty-state">
+                    <h2>Под текущие фильтры ничего не нашлось.</h2>
+                    <p className="muted">Снимите часть фильтров или дождитесь, пока очередь доиндексирует свежие файлы.</p>
+                  </article>
+                )}
               </div>
+              {mediaHasMore ? (
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => void handleLoadMoreMedia()} disabled={loadingMoreMedia}>
+                    {loadingMoreMedia ? 'Загружаем еще...' : 'Загрузить еще'}
+                  </button>
+                  <small className="muted">Следующие карточки подгружаются отдельно, без ожидания всей библиотеки.</small>
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}
@@ -1201,10 +1408,15 @@ function App() {
             </section>
             <section className="glass-panel list-panel">
               <div className="panel-head">
-                <div><span>Лента</span><h2>{feedItems.length} элементов в выбранном диапазоне</h2></div>
+                <div><span>Лента</span><h2>{loadingFeed && feedItems.length === 0 ? 'Загружаем первую порцию' : `${feedItems.length}${feedHasMore ? '+' : ''} элементов в выбранном диапазоне`}</h2></div>
               </div>
               <div className="feed-stack">
-                {feedItems.length ? (
+                {loadingFeed && feedItems.length === 0 ? (
+                  <article className="empty-state">
+                    <h2>Собираем ленту...</h2>
+                    <p className="muted">Свежие записи подаются порциями, чтобы исторический фид не блокировал интерфейс.</p>
+                  </article>
+                ) : feedItems.length ? (
                   feedItems.map((item) => <FeedCard key={item.id} item={item} token={token} onOpen={() => openMedia(item)} />)
                 ) : (
                   <article className="empty-state">
@@ -1213,6 +1425,14 @@ function App() {
                   </article>
                 )}
               </div>
+              {feedHasMore ? (
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => void handleLoadMoreFeed()} disabled={loadingMoreFeed}>
+                    {loadingMoreFeed ? 'Загружаем еще...' : 'Показать еще'}
+                  </button>
+                  <small className="muted">Остальная история подтягивается по требованию, а не целиком.</small>
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}

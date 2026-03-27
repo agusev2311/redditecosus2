@@ -103,23 +103,15 @@ def cleanup_archive_staging() -> None:
         session.close()
 
 
-def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: bool = True) -> dict:
-    archive = ArchiveImport(
-        owner_id=owner_id,
-        original_filename=file.filename or "archive.bin",
-        archive_path="",
-        extracted_path="",
-    )
-    session.add(archive)
-    session.flush()
-
-    archive_dir = settings.archive_dir / f"user_{owner_id}" / archive.id
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / (file.filename or f"{archive.id}.bin")
-    with archive_path.open("wb") as destination:
-        shutil.copyfileobj(file.stream, destination)
-
-    extracted_dir = archive_dir / "extracted"
+def _ingest_saved_archive(
+    session,
+    owner_id: int,
+    archive: ArchiveImport,
+    archive_path: Path,
+    *,
+    auto_queue: bool = True,
+) -> dict:
+    extracted_dir = archive_path.parent / "extracted"
     extracted_dir.mkdir(parents=True, exist_ok=True)
     extract_archive(archive_path, extracted_dir)
 
@@ -183,3 +175,46 @@ def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: boo
         "top_unsupported_extensions": [[extension, count] for extension, count in unsupported_extensions.most_common(8)],
         "artifacts_cleaned": True,
     }
+
+
+def ingest_archive_path(
+    session,
+    owner_id: int,
+    source_path: Path,
+    original_filename: str,
+    *,
+    auto_queue: bool = True,
+) -> dict:
+    archive = ArchiveImport(
+        owner_id=owner_id,
+        original_filename=original_filename or source_path.name,
+        archive_path="",
+        extracted_path="",
+    )
+    session.add(archive)
+    session.flush()
+
+    archive_dir = settings.archive_dir / f"user_{owner_id}" / archive.id
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / (original_filename or f"{archive.id}.bin")
+    source_path.replace(archive_path)
+    return _ingest_saved_archive(session, owner_id, archive, archive_path, auto_queue=auto_queue)
+
+
+def ingest_archive(session, owner_id: int, file: FileStorage, *, auto_queue: bool = True) -> dict:
+    archive = ArchiveImport(
+        owner_id=owner_id,
+        original_filename=file.filename or "archive.bin",
+        archive_path="",
+        extracted_path="",
+    )
+    session.add(archive)
+    session.flush()
+
+    archive_dir = settings.archive_dir / f"user_{owner_id}" / archive.id
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / (file.filename or f"{archive.id}.bin")
+    with archive_path.open("wb") as destination:
+        shutil.copyfileobj(file.stream, destination)
+
+    return _ingest_saved_archive(session, owner_id, archive, archive_path, auto_queue=auto_queue)

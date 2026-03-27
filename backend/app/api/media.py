@@ -3,17 +3,32 @@ from __future__ import annotations
 from datetime import date, datetime, time, timezone
 
 from flask import Blueprint, g, jsonify, request, send_file
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import load_only
 
 from app.config import settings
 from app.db.session import SessionLocal
 from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, SafetyRating, Tag, TagKind, TagOrigin
 from app.services.analysis_enrichment import normalize_tag_name
-from app.services.archive import ingest_archive
+from app.services.archive import ingest_archive, ingest_archive_path
 from app.services.audit import audit
 from app.services.media_probe import detect_file_type
 from app.services.processing import enqueue_media, get_processing_coordinator
-from app.services.storage import absolute_media_path, absolute_thumbnail_path, queue_media_for_processing, save_uploaded_media
+from app.services.resumable_uploads import (
+    discard_upload_session,
+    finalize_upload_session,
+    get_upload_session,
+    prepare_upload_session,
+    serialize_upload_session,
+    write_upload_chunk,
+)
+from app.services.storage import (
+    absolute_media_path,
+    absolute_thumbnail_path,
+    queue_media_for_processing,
+    save_staged_media,
+    save_uploaded_media,
+)
 from app.services.tag_catalog import get_tag_description_coordinator
 from app.utils.auth import login_required
 
@@ -22,6 +37,25 @@ media_bp = Blueprint("media", __name__)
 
 _RATING_TAGS = {rating.value for rating in SafetyRating}
 _MEDIA_LIST_DESCRIPTION_MAX_CHARS = 240
+_MEDIA_PAGE_LIMIT_DEFAULT = 48
+_MEDIA_PAGE_LIMIT_MAX = 200
+_MEDIA_LIST_COLUMNS = (
+    MediaItem.id,
+    MediaItem.kind,
+    MediaItem.original_filename,
+    MediaItem.source_path,
+    MediaItem.file_size,
+    MediaItem.width,
+    MediaItem.height,
+    MediaItem.duration_seconds,
+    MediaItem.blur_score,
+    MediaItem.safety_rating,
+    MediaItem.description,
+    MediaItem.processing_status,
+    MediaItem.normalized_timestamp,
+    MediaItem.thumbnail_path,
+    MediaItem.created_at,
+)
 
 
 def _trim_text(value: str | None, max_chars: int | None) -> str | None:
@@ -33,11 +67,17 @@ def _trim_text(value: str | None, max_chars: int | None) -> str | None:
     return f"{text[:max_chars].rstrip()}..."
 
 
-def _media_to_dict(item: MediaItem, *, include_full_payload: bool, description_max_chars: int | None = None) -> dict:
+def _media_to_dict(
+    item: MediaItem,
+    *,
+    include_full_payload: bool,
+    include_localized_descriptions: bool = True,
+    description_max_chars: int | None = None,
+) -> dict:
     thumbnail_path = absolute_thumbnail_path(item)
     description_ru = None
     description_en = None
-    if isinstance(item.ai_payload, dict):
+    if include_localized_descriptions and isinstance(item.ai_payload, dict):
         description_ru = _trim_text(item.ai_payload.get("description_ru"), description_max_chars)
         description_en = _trim_text(item.ai_payload.get("description_en"), description_max_chars)
     return {
@@ -85,6 +125,7 @@ def _serialize_media_item(
     item: MediaItem,
     *,
     include_full_payload: bool,
+    include_localized_descriptions: bool = True,
     description_max_chars: int | None = None,
 ) -> dict:
     tag_map = _tags_for_media_ids(session, [item.id])
@@ -92,6 +133,7 @@ def _serialize_media_item(
         **_media_to_dict(
             item,
             include_full_payload=include_full_payload,
+            include_localized_descriptions=include_localized_descriptions,
             description_max_chars=description_max_chars,
         ),
         "tags": tag_map.get(item.id, []),
@@ -103,6 +145,7 @@ def _serialize_media_list(
     rows: list[MediaItem],
     *,
     include_full_payload: bool,
+    include_localized_descriptions: bool = True,
     description_max_chars: int | None = None,
 ) -> list[dict]:
     media_ids = [row.id for row in rows]
@@ -112,6 +155,7 @@ def _serialize_media_list(
             **_media_to_dict(
                 row,
                 include_full_payload=include_full_payload,
+                include_localized_descriptions=include_localized_descriptions,
                 description_max_chars=description_max_chars,
             ),
             "tags": tag_map.get(row.id, []),
@@ -134,6 +178,47 @@ def _parse_datetime_filter(raw_value: str | None, *, end_of_day: bool) -> dateti
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_positive_int(raw_value: str | None, *, default: int, minimum: int = 1, maximum: int = _MEDIA_PAGE_LIMIT_MAX) -> int:
+    value = default
+    if raw_value:
+        value = int(raw_value)
+    return max(minimum, min(value, maximum))
+
+
+def _make_media_cursor(item: MediaItem) -> str | None:
+    if item.created_at is None:
+        return None
+    return f"{item.created_at.isoformat()}|{item.id}"
+
+
+def _parse_media_cursor(raw_value: str | None) -> tuple[datetime, str] | None:
+    if not raw_value:
+        return None
+    created_at_raw, separator, media_id = raw_value.partition("|")
+    if not separator or not media_id:
+        raise ValueError("Invalid cursor")
+    created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return created_at, media_id
+
+
+def _send_uncached_file(path, *, mimetype: str | None, download_name: str | None = None):
+    response = send_file(
+        path,
+        mimetype=mimetype,
+        download_name=download_name,
+        conditional=True,
+        max_age=0,
+        etag=False,
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def _normalize_manual_safety_tags(raw_tags: list[str], rating: SafetyRating | None) -> list[str]:
@@ -214,6 +299,107 @@ def _jobs_query_for_current_user(session):
     return query
 
 
+@media_bp.post("/uploads/init")
+@login_required
+def init_upload():
+    payload = request.get_json(force=True)
+    file_name = str(payload.get("file_name") or "").strip()
+    if not file_name:
+        return jsonify({"error": "file_name is required"}), 400
+
+    try:
+        file_size = int(payload.get("file_size") or 0)
+        last_modified_raw = payload.get("last_modified")
+        last_modified = int(last_modified_raw) if last_modified_raw not in {None, ""} else None
+        chunk_size_raw = payload.get("chunk_size")
+        chunk_size = int(chunk_size_raw) if chunk_size_raw not in {None, ""} else None
+        state = prepare_upload_session(
+            owner_id=g.current_user.id,
+            file_name=file_name,
+            file_size=file_size,
+            last_modified=last_modified,
+            content_type=str(payload.get("content_type") or "").strip() or None,
+            desired_chunk_size=chunk_size,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"upload": serialize_upload_session(state)})
+
+
+@media_bp.put("/uploads/<upload_id>/parts/<int:part_index>")
+@login_required
+def upload_chunk(upload_id: str, part_index: int):
+    try:
+        state = write_upload_chunk(upload_id, g.current_user.id, part_index, request.stream)
+    except FileNotFoundError:
+        return jsonify({"error": "Upload session not found"}), 404
+    except PermissionError:
+        return jsonify({"error": "Upload session not found"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"upload": serialize_upload_session(state)})
+
+
+@media_bp.post("/uploads/<upload_id>/complete")
+@login_required
+def complete_upload(upload_id: str):
+    try:
+        state, staged_path = finalize_upload_session(upload_id, g.current_user.id)
+    except FileNotFoundError:
+        return jsonify({"error": "Upload session not found"}), 404
+    except PermissionError:
+        return jsonify({"error": "Upload session not found"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    session = SessionLocal()
+    direct_jobs: list[str] = []
+    created_items: list[dict] = []
+    imported_archives: list[dict] = []
+    try:
+        if state.file_type == "archive":
+            archive_result = ingest_archive_path(
+                session,
+                g.current_user.id,
+                staged_path,
+                state.file_name,
+                auto_queue=True,
+            )
+            imported_archives.append(archive_result)
+            direct_jobs.extend(archive_result.get("job_ids", []))
+        else:
+            item = save_staged_media(session, g.current_user.id, staged_path, state.file_name)
+            job = queue_media_for_processing(session, item)
+            direct_jobs.append(job.id)
+            created_items.append(
+                _media_to_dict(
+                    item,
+                    include_full_payload=False,
+                    include_localized_descriptions=False,
+                    description_max_chars=_MEDIA_LIST_DESCRIPTION_MAX_CHARS,
+                )
+            )
+        session.commit()
+    except ValueError as exc:
+        session.rollback()
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    discard_upload_session(upload_id)
+    if settings.enable_processing:
+        coordinator = get_processing_coordinator()
+        for job_id in direct_jobs:
+            coordinator.enqueue(job_id)
+
+    return jsonify({"items": created_items, "archives": imported_archives})
+
+
 @media_bp.post("/media/upload")
 @login_required
 def upload_media():
@@ -252,7 +438,7 @@ def upload_media():
 def list_media():
     session = SessionLocal()
     try:
-        query = session.query(MediaItem)
+        query = session.query(MediaItem).options(load_only(*_MEDIA_LIST_COLUMNS))
         if g.current_user.role.value != "admin":
             query = query.filter(MediaItem.owner_id == g.current_user.id)
         elif request.args.get("owner_id"):
@@ -282,23 +468,40 @@ def list_media():
         if created_to is not None:
             query = query.filter(MediaItem.created_at <= created_to)
 
-        limit_raw = (request.args.get("limit") or "").strip()
-        ordered_query = query.distinct().order_by(MediaItem.created_at.desc())
-        if limit_raw:
-            limit = max(1, min(int(limit_raw), 2000))
-            rows = ordered_query.limit(limit).all()
-        else:
-            rows = ordered_query.all()
+        cursor = _parse_media_cursor((request.args.get("cursor") or "").strip() or None)
+        if cursor is not None:
+            cursor_created_at, cursor_id = cursor
+            query = query.filter(
+                or_(
+                    MediaItem.created_at < cursor_created_at,
+                    and_(MediaItem.created_at == cursor_created_at, MediaItem.id < cursor_id),
+                )
+            )
+
+        limit = _parse_positive_int(
+            (request.args.get("limit") or "").strip() or None,
+            default=_MEDIA_PAGE_LIMIT_DEFAULT,
+        )
+        ordered_query = query.distinct().order_by(MediaItem.created_at.desc(), MediaItem.id.desc())
+        page = ordered_query.limit(limit + 1).all()
+        has_more = len(page) > limit
+        rows = page[:limit]
+        next_cursor = _make_media_cursor(rows[-1]) if has_more and rows else None
         return jsonify(
             {
                 "items": _serialize_media_list(
                     session,
                     rows,
                     include_full_payload=False,
+                    include_localized_descriptions=False,
                     description_max_chars=_MEDIA_LIST_DESCRIPTION_MAX_CHARS,
-                )
+                ),
+                "has_more": has_more,
+                "next_cursor": next_cursor,
             }
         )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     finally:
         session.close()
 
@@ -324,7 +527,11 @@ def stream_media(media_id: str):
         item = session.get(MediaItem, media_id)
         if item is None or not _check_media_access(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
-        return send_file(absolute_media_path(item), mimetype=item.mime_type, download_name=item.original_filename)
+        return _send_uncached_file(
+            absolute_media_path(item),
+            mimetype=item.mime_type,
+            download_name=item.original_filename,
+        )
     finally:
         session.close()
 
@@ -336,7 +543,11 @@ def stream_media_public(media_id: str):
         item = session.get(MediaItem, media_id)
         if item is None:
             return jsonify({"error": "Not found"}), 404
-        return send_file(absolute_media_path(item), mimetype=item.mime_type, download_name=item.original_filename)
+        return _send_uncached_file(
+            absolute_media_path(item),
+            mimetype=item.mime_type,
+            download_name=item.original_filename,
+        )
     finally:
         session.close()
 
@@ -352,7 +563,7 @@ def stream_thumbnail(media_id: str):
         thumbnail = absolute_thumbnail_path(item)
         if thumbnail is None or not thumbnail.exists():
             return jsonify({"error": "Thumbnail missing"}), 404
-        return send_file(thumbnail, mimetype="image/jpeg")
+        return _send_uncached_file(thumbnail, mimetype="image/jpeg")
     finally:
         session.close()
 
@@ -367,7 +578,7 @@ def stream_thumbnail_public(media_id: str):
         thumbnail = absolute_thumbnail_path(item)
         if thumbnail is None or not thumbnail.exists():
             return jsonify({"error": "Thumbnail missing"}), 404
-        return send_file(thumbnail, mimetype="image/jpeg")
+        return _send_uncached_file(thumbnail, mimetype="image/jpeg")
     finally:
         session.close()
 

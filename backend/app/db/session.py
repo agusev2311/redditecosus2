@@ -62,6 +62,13 @@ def _run_schema_migrations() -> None:
     _ensure_sqlite_column("tags", "details_payload", "JSON")
     _ensure_sqlite_column("tags", "ai_described_at", "DATETIME")
     _ensure_sqlite_column("tags", "updated_at", "DATETIME")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_media_items_created_at_id ON media_items (created_at DESC, id DESC)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_media_items_owner_created_at_id ON media_items (owner_id, created_at DESC, id DESC)"
+        )
 
 
 def is_missing_table_error(exc: Exception) -> bool:

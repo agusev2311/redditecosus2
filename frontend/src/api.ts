@@ -1,4 +1,4 @@
-import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, TagCatalogPayload, TriggerTagBackfillResponse, UploadResponse, User } from './types'
+import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, MediaListResponse, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, TagCatalogPayload, TriggerTagBackfillResponse, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -20,7 +20,7 @@ function buildUrl(path: string, params?: Record<string, string | undefined>) {
   return url.toString()
 }
 
-async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, token?: string, signal?: AbortSignal): Promise<T> {
   const headers = new Headers(options.headers)
   if (!headers.has('Content-Type') && options.body && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json')
@@ -32,6 +32,7 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   const response = await fetch(buildUrl(path), {
     ...options,
     headers,
+    signal,
   })
 
   if (!response.ok) {
@@ -41,6 +42,151 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   }
 
   return (await response.json()) as T
+}
+
+type UploadSessionState = {
+  upload_id: string
+  file_name: string
+  file_size: number
+  chunk_size: number
+  total_parts: number
+  uploaded_parts: number[]
+  uploaded_bytes: number
+  is_complete: boolean
+}
+
+const MB = 1024 * 1024
+const MAX_PARALLEL_UPLOAD_FILES = 2
+const MAX_PARALLEL_UPLOAD_PARTS = 4
+const MAX_UPLOAD_RETRIES = 3
+
+function resolveChunkSize(file: File) {
+  if (file.size >= 1024 * MB) {
+    return 16 * MB
+  }
+  if (file.size >= 256 * MB) {
+    return 8 * MB
+  }
+  return 4 * MB
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function runWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
+  if (items.length === 0) {
+    return [] as R[]
+  }
+
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const currentIndex = nextIndex
+      nextIndex += 1
+      if (currentIndex >= items.length) {
+        return
+      }
+      results[currentIndex] = await worker(items[currentIndex], currentIndex)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+function initUpload(token: string, file: File) {
+  return request<{ upload: UploadSessionState }>(
+    '/api/uploads/init',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        file_name: file.name,
+        file_size: file.size,
+        last_modified: file.lastModified || undefined,
+        content_type: file.type || undefined,
+        chunk_size: resolveChunkSize(file),
+      }),
+    },
+    token,
+  )
+}
+
+function completeUpload(token: string, uploadId: string) {
+  return request<UploadResponse>(
+    `/api/uploads/${uploadId}/complete`,
+    {
+      method: 'POST',
+    },
+    token,
+  )
+}
+
+function sendChunk(
+  token: string,
+  uploadId: string,
+  partIndex: number,
+  payload: Blob,
+  onProgress: (loaded: number) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', buildUrl(`/api/uploads/${uploadId}/parts/${partIndex}`))
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(event.loaded)
+      }
+    }
+    xhr.onerror = () => reject(new Error('Chunk upload failed'))
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        reject(new Error(xhr.responseText || `Chunk upload failed with ${xhr.status}`))
+      }
+    }
+    xhr.send(payload)
+  })
+}
+
+type ProgressTracker = {
+  addConfirmedBytes: (bytes: number) => void
+  updateChunkProgress: (key: string, loaded: number) => void
+  clearChunkProgress: (key: string) => void
+}
+
+async function uploadFileWithResume(token: string, file: File, tracker: ProgressTracker) {
+  const { upload } = await initUpload(token, file)
+  tracker.addConfirmedBytes(upload.uploaded_bytes)
+
+  const uploadedParts = new Set(upload.uploaded_parts)
+  const missingParts = Array.from({ length: upload.total_parts }, (_, partIndex) => partIndex).filter((partIndex) => !uploadedParts.has(partIndex))
+
+  await runWithConcurrency(missingParts, MAX_PARALLEL_UPLOAD_PARTS, async (partIndex) => {
+    const chunkStart = partIndex * upload.chunk_size
+    const chunkEnd = Math.min(chunkStart + upload.chunk_size, file.size)
+    const chunk = file.slice(chunkStart, chunkEnd)
+    const chunkKey = `${upload.upload_id}:${partIndex}`
+
+    for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt += 1) {
+      try {
+        await sendChunk(token, upload.upload_id, partIndex, chunk, (loaded) => tracker.updateChunkProgress(chunkKey, loaded))
+        tracker.clearChunkProgress(chunkKey)
+        tracker.addConfirmedBytes(chunk.size)
+        return
+      } catch (error) {
+        tracker.clearChunkProgress(chunkKey)
+        if (attempt === MAX_UPLOAD_RETRIES - 1) {
+          throw error
+        }
+        await sleep(400 * (attempt + 1))
+      }
+    }
+  })
+
+  return completeUpload(token, upload.upload_id)
 }
 
 export function mediaAssetUrl(path: string | null | undefined, token?: string) {
@@ -90,13 +236,13 @@ export function getOverview(token: string) {
   return request<OverviewPayload>('/api/dashboard/overview', {}, token)
 }
 
-export function listMedia(token: string, params: Record<string, string | undefined>) {
+export function listMedia(token: string, params: Record<string, string | undefined>, signal?: AbortSignal) {
   const url = buildUrl('/api/media', params)
-  return request<{ items: MediaItem[] }>(url, {}, token)
+  return request<MediaListResponse>(url, {}, token, signal)
 }
 
-export function getMedia(token: string, mediaId: string) {
-  return request<{ item: MediaItem }>(`/api/media/${mediaId}`, {}, token)
+export function getMedia(token: string, mediaId: string, signal?: AbortSignal) {
+  return request<{ item: MediaItem }>(`/api/media/${mediaId}`, {}, token, signal)
 }
 
 export function updateMedia(token: string, mediaId: string, payload: { description?: string; safety_rating?: string; safety_tags?: string[] }) {
@@ -229,27 +375,41 @@ export function reindexMedia(token: string, mediaId: string) {
   )
 }
 
-export function uploadFiles(token: string, files: File[], onProgress: (progress: number) => void) {
-  return new Promise<UploadResponse>((resolve, reject) => {
-    const form = new FormData()
-    files.forEach((file) => form.append('files', file))
+export async function uploadFiles(token: string, files: File[], onProgress: (progress: number) => void) {
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
+  let confirmedBytes = 0
+  const chunkProgress = new Map<string, number>()
 
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', buildUrl('/api/media/upload'))
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(Math.round((event.loaded / event.total) * 100))
-      }
-    }
-    xhr.onerror = () => reject(new Error('Upload failed'))
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText) as UploadResponse)
-      } else {
-        reject(new Error(xhr.responseText || `Upload failed with ${xhr.status}`))
-      }
-    }
-    xhr.send(form)
-  })
+  const updateProgress = () => {
+    const inFlightBytes = Array.from(chunkProgress.values()).reduce((sum, value) => sum + value, 0)
+    const totalLoaded = Math.min(confirmedBytes + inFlightBytes, totalBytes || 1)
+    onProgress(Math.round((totalLoaded / Math.max(totalBytes, 1)) * 100))
+  }
+
+  const tracker: ProgressTracker = {
+    addConfirmedBytes(bytes) {
+      confirmedBytes += bytes
+      updateProgress()
+    },
+    updateChunkProgress(key, loaded) {
+      chunkProgress.set(key, loaded)
+      updateProgress()
+    },
+    clearChunkProgress(key) {
+      chunkProgress.delete(key)
+      updateProgress()
+    },
+  }
+
+  const results = await runWithConcurrency(files, MAX_PARALLEL_UPLOAD_FILES, (file) => uploadFileWithResume(token, file, tracker))
+  onProgress(100)
+
+  return results.reduce<UploadResponse>(
+    (combined, result) => {
+      combined.items.push(...result.items)
+      combined.archives.push(...result.archives)
+      return combined
+    },
+    { items: [], archives: [] },
+  )
 }

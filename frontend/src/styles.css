@@ -414,6 +414,12 @@ button:disabled {
   min-width: 0;
 }
 
+.list-row > div {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
 .sidebar-summary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -806,6 +812,11 @@ button:disabled {
   gap: var(--space-lg);
 }
 
+.storage-bar-card {
+  display: grid;
+  gap: var(--space-md);
+}
+
 .storage-bar-card,
 .storage-legend-item {
   padding: 1rem;
@@ -814,15 +825,27 @@ button:disabled {
   background: rgba(255, 255, 255, 0.58);
 }
 
+.storage-legend {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .storage-legend-item {
   display: flex;
   gap: var(--space-md);
   align-items: center;
+  min-width: 0;
+}
+
+.storage-legend-copy {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
 }
 
 .storage-swatch {
   width: 16px;
   height: 16px;
+  flex: 0 0 16px;
   border-radius: 999px;
 }
 

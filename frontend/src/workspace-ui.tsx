@@ -15,7 +15,6 @@ import type {
 } from './types'
 import type { StorageSegment, TabDefinition, WorkspaceTab } from './workspace-helpers'
 import {
-  STORAGE_LABELS,
   configValueToInput,
   formatBytes,
   formatDate,
@@ -944,7 +943,6 @@ export function AdminTab({
   projectUsageTotal,
   driveBarSegments,
   projectBarSegments,
-  orderedProjectBreakdown,
   aiProxySleep,
   memoryGuard,
   resumingAIProxy,
@@ -970,7 +968,6 @@ export function AdminTab({
   projectUsageTotal: number
   driveBarSegments: StorageSegment[]
   projectBarSegments: StorageSegment[]
-  orderedProjectBreakdown: Array<[string, number]>
   aiProxySleep: OverviewPayload['ai_proxy_sleep']
   memoryGuard: OverviewPayload['memory_guard']
   resumingAIProxy: boolean
@@ -1037,24 +1034,16 @@ export function AdminTab({
                 </div>
               </div>
               <div className="storage-legend">
-                {driveBarSegments.map((segment) => (
+                {(projectBarSegments.length ? projectBarSegments : driveBarSegments).map((segment) => (
                   <article key={segment.key} className="storage-legend-item">
                     <span className="storage-swatch" style={{ background: segment.color }} />
-                    <div>
+                    <div className="storage-legend-copy">
                       <strong>{segment.label}</strong>
                       <small>{formatBytes(segment.bytes)} · {formatMetric(segment.percent)}%</small>
                     </div>
                   </article>
                 ))}
               </div>
-            </div>
-            <div className="list-stack">
-              {orderedProjectBreakdown.map(([name, value]) => (
-                <article key={name} className="list-row">
-                  <div><strong>{STORAGE_LABELS[name] ?? name}</strong><small>{formatBytes(value)}</small></div>
-                  <span className="badge">{Math.max(Math.round((value / Math.max(projectUsageTotal || 1, 1)) * 100), 1)}%</span>
-                </article>
-              ))}
             </div>
           </>
         ) : <p className="muted">Storage analytics unavailable.</p>}

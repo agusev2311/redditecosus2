@@ -976,7 +976,6 @@ function App() {
             projectUsageTotal={projectUsageTotal}
             driveBarSegments={driveBarSegments}
             projectBarSegments={projectBarSegments}
-            orderedProjectBreakdown={orderedProjectItems}
             aiProxySleep={aiProxySleep}
             memoryGuard={memoryGuard}
             resumingAIProxy={resumingAIProxy}

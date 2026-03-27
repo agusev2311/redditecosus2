@@ -119,6 +119,7 @@ function App() {
   const [resettingLibrary, setResettingLibrary] = useState(false)
   const mediaLoadMoreCursorRef = useRef<string | null>(null)
   const feedLoadMoreCursorRef = useRef<string | null>(null)
+  const mediaDetailsControllerRef = useRef<AbortController | null>(null)
 
   const deferredSearch = useDeferredValue(searchInput)
   const deferredTagSearch = useDeferredValue(tagSearch)
@@ -425,6 +426,12 @@ function App() {
     if (activeTab !== 'tags') setTagDetailOpen(false)
   }, [activeTab])
 
+  useEffect(() => (
+    () => {
+      mediaDetailsControllerRef.current?.abort()
+    }
+  ), [])
+
   const handleAuthSubmit = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
@@ -730,20 +737,35 @@ function App() {
     startTransition(() => setTagSearch(item.name))
   }
 
+  const closeMediaViewer = () => {
+    mediaDetailsControllerRef.current?.abort()
+    mediaDetailsControllerRef.current = null
+    setViewerOpen(false)
+    setSelectedMedia(null)
+  }
+
   const openMedia = (item: MediaItem) => {
-    startTransition(() => {
-      setSelectedMedia(item)
-      setViewerOpen(true)
-    })
+    mediaDetailsControllerRef.current?.abort()
+    const controller = new AbortController()
+    mediaDetailsControllerRef.current = controller
+    setSelectedMedia(item)
+    setViewerOpen(true)
     void (async () => {
       if (!token) return
       try {
-        const response = await getMedia(token, item.id)
+        const response = await getMedia(token, item.id, controller.signal)
         setMedia((current) => current.map((entry) => (entry.id === response.item.id ? { ...entry, ...response.item } : entry)))
         setFeedItems((current) => current.map((entry) => (entry.id === response.item.id ? { ...entry, ...response.item } : entry)))
         setSelectedMedia((current) => (current && current.id === item.id ? response.item : current))
       } catch (reason) {
+        if (controller.signal.aborted) {
+          return
+        }
         setError((current) => (current || (reason instanceof Error ? reason.message : 'Failed to load media details')))
+      } finally {
+        if (mediaDetailsControllerRef.current === controller) {
+          mediaDetailsControllerRef.current = null
+        }
       }
     })()
   }
@@ -977,11 +999,12 @@ function App() {
           />
         ) : null}
       </section>
-      {viewerOpen ? (
+      {viewerOpen && selectedMedia ? (
         <MediaViewerModal
+          key={selectedMedia.id}
           selectedMedia={selectedMedia}
           token={token}
-          onClose={() => setViewerOpen(false)}
+          onClose={closeMediaViewer}
           onReindex={(mediaId) => void handleReindex(mediaId)}
           safetyForm={safetyForm}
           onSafetyFormChange={setSafetyForm}

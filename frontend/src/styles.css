@@ -722,9 +722,7 @@ button:disabled {
 }
 
 .gallery-preview img,
-.feed-preview img,
-.modal-preview img,
-.modal-preview video {
+.feed-preview img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -862,9 +860,24 @@ button:disabled {
 }
 
 .modal-preview {
-  min-height: 380px;
-  border-radius: var(--radius-lg);
+  display: grid;
+  place-items: center;
+  min-height: min(68vh, 760px);
+  padding: 0.5rem;
+  border-radius: 10px;
   overflow: hidden;
+  background: rgba(246, 242, 234, 0.92);
+}
+
+.modal-preview img,
+.modal-preview video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(64vh, 720px);
+  object-fit: contain;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .modal-copy {

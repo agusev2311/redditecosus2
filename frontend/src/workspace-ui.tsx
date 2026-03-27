@@ -1,4 +1,4 @@
-import type { ChangeEvent, DragEvent, FormEvent } from 'react'
+import { useEffect, useState, type ChangeEvent, type DragEvent, type FormEvent, type ReactNode } from 'react'
 
 import { mediaAssetUrl } from './api'
 import type {
@@ -127,6 +127,51 @@ function SidebarTab({
   )
 }
 
+function MediaPreview({
+  item,
+  token,
+  className,
+  children,
+}: {
+  item: MediaItem
+  token: string
+  className: string
+  children?: ReactNode
+}) {
+  const thumbnailUrl = mediaAssetUrl(item.thumbnail_url, token)
+  const sourceUrl = item.kind === 'video' ? '' : mediaAssetUrl(item.file_url, token)
+  const [currentUrl, setCurrentUrl] = useState(thumbnailUrl || sourceUrl)
+
+  useEffect(() => {
+    setCurrentUrl(thumbnailUrl || sourceUrl)
+  }, [thumbnailUrl, sourceUrl])
+
+  const handleError = () => {
+    if (sourceUrl && currentUrl !== sourceUrl) {
+      setCurrentUrl(sourceUrl)
+      return
+    }
+    setCurrentUrl('')
+  }
+
+  return (
+    <div className={className}>
+      {currentUrl ? (
+        <img
+          src={currentUrl}
+          alt={item.original_filename}
+          loading="lazy"
+          decoding="async"
+          onError={handleError}
+        />
+      ) : (
+        <div className="gallery-empty">{kindLabel(item.kind)}</div>
+      )}
+      {children}
+    </div>
+  )
+}
+
 function MediaCard({
   item,
   token,
@@ -144,13 +189,12 @@ function MediaCard({
       <button className="gallery-hitbox" type="button" onClick={onOpen}>
         <span className="sr-only">Open media</span>
       </button>
-      <div className="gallery-preview">
-        {item.thumbnail_url ? <img src={mediaAssetUrl(item.thumbnail_url, token)} alt={item.original_filename} loading="lazy" /> : <div className="gallery-empty">{kindLabel(item.kind)}</div>}
+      <MediaPreview item={item} token={token} className="gallery-preview">
         <div className="gallery-overlay">
           <span>{kindLabel(item.kind)}</span>
           <span className={`badge badge-${item.safety_rating}`}>{ratingLabel(item.safety_rating)}</span>
         </div>
-      </div>
+      </MediaPreview>
       <div className="gallery-body">
         <div className="row-meta">
           <span className={`badge badge-status-${item.processing_status}`}>{item.processing_status}</span>
@@ -181,9 +225,7 @@ function FeedCard({ item, token, onOpen }: { item: MediaItem; token: string; onO
       <button className="gallery-hitbox" type="button" onClick={onOpen}>
         <span className="sr-only">Open media</span>
       </button>
-      <div className="feed-preview">
-        {item.thumbnail_url ? <img src={mediaAssetUrl(item.thumbnail_url, token)} alt={item.original_filename} loading="lazy" /> : <div className="gallery-empty">{kindLabel(item.kind)}</div>}
-      </div>
+      <MediaPreview item={item} token={token} className="feed-preview" />
       <div className="feed-body">
         <div className="row-meta">
           <div className="chip-row">

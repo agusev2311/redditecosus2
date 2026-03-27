@@ -1,4 +1,4 @@
-import { type ChangeEvent, type DragEvent, type FormEvent, startTransition, useDeferredValue, useEffect, useState } from 'react'
+import { type ChangeEvent, type DragEvent, type FormEvent, startTransition, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 import {
   bootstrap,
@@ -117,6 +117,8 @@ function App() {
   const [resumingAIProxy, setResumingAIProxy] = useState(false)
   const [dangerConfirmation, setDangerConfirmation] = useState('')
   const [resettingLibrary, setResettingLibrary] = useState(false)
+  const mediaLoadMoreCursorRef = useRef<string | null>(null)
+  const feedLoadMoreCursorRef = useRef<string | null>(null)
 
   const deferredSearch = useDeferredValue(searchInput)
   const deferredTagSearch = useDeferredValue(tagSearch)
@@ -157,6 +159,8 @@ function App() {
     setActiveTab('library')
     setMobileSidebarOpen(false)
     setDragActive(false)
+    mediaLoadMoreCursorRef.current = null
+    feedLoadMoreCursorRef.current = null
   }
 
   useEffect(() => {
@@ -204,6 +208,7 @@ function App() {
     if (!token || !currentUser || activeTab !== 'library') return
     const controller = new AbortController()
     let cancelled = false
+    mediaLoadMoreCursorRef.current = null
     setLoadingMedia(true)
     setLoadingMoreMedia(false)
     const loadLibrary = async () => {
@@ -244,6 +249,7 @@ function App() {
     if (!token || !currentUser || activeTab !== 'feed') return
     const controller = new AbortController()
     let cancelled = false
+    feedLoadMoreCursorRef.current = null
     setLoadingFeed(true)
     setLoadingMoreFeed(false)
     const loadFeed = async () => {
@@ -453,7 +459,10 @@ function App() {
   }
 
   const handleLoadMoreMedia = async () => {
-    if (!token || loadingMoreMedia || !mediaHasMore || !mediaCursor) return
+    if (!token || !mediaHasMore || !mediaCursor) return
+    const requestedCursor = mediaCursor
+    if (mediaLoadMoreCursorRef.current === requestedCursor) return
+    mediaLoadMoreCursorRef.current = requestedCursor
     setLoadingMoreMedia(true)
     try {
       const payload = await listMedia(token, {
@@ -462,12 +471,16 @@ function App() {
         rating: ratingFilter || undefined,
         status: statusFilter || undefined,
         limit: '48',
-        cursor: mediaCursor,
+        cursor: requestedCursor,
       })
       startTransition(() => setMedia((current) => appendUniqueMedia(current, payload.items)))
-      setMediaCursor(payload.next_cursor ?? null)
-      setMediaHasMore(payload.has_more)
+      const cursorAdvanced = payload.next_cursor && payload.next_cursor !== requestedCursor
+      setMediaCursor(cursorAdvanced ? (payload.next_cursor ?? null) : null)
+      setMediaHasMore(Boolean(payload.has_more && cursorAdvanced))
     } catch (reason) {
+      if (mediaLoadMoreCursorRef.current === requestedCursor) {
+        mediaLoadMoreCursorRef.current = null
+      }
       setError(reason instanceof Error ? reason.message : 'Failed to load more media')
     } finally {
       setLoadingMoreMedia(false)
@@ -475,19 +488,26 @@ function App() {
   }
 
   const handleLoadMoreFeed = async () => {
-    if (!token || loadingMoreFeed || !feedHasMore || !feedCursor) return
+    if (!token || !feedHasMore || !feedCursor) return
+    const requestedCursor = feedCursor
+    if (feedLoadMoreCursorRef.current === requestedCursor) return
+    feedLoadMoreCursorRef.current = requestedCursor
     setLoadingMoreFeed(true)
     try {
       const payload = await listMedia(token, {
         created_from: feedFrom || undefined,
         created_to: feedTo || undefined,
         limit: '36',
-        cursor: feedCursor,
+        cursor: requestedCursor,
       })
       startTransition(() => setFeedItems((current) => appendUniqueMedia(current, payload.items)))
-      setFeedCursor(payload.next_cursor ?? null)
-      setFeedHasMore(payload.has_more)
+      const cursorAdvanced = payload.next_cursor && payload.next_cursor !== requestedCursor
+      setFeedCursor(cursorAdvanced ? (payload.next_cursor ?? null) : null)
+      setFeedHasMore(Boolean(payload.has_more && cursorAdvanced))
     } catch (reason) {
+      if (feedLoadMoreCursorRef.current === requestedCursor) {
+        feedLoadMoreCursorRef.current = null
+      }
       setError(reason instanceof Error ? reason.message : 'Failed to load more feed items')
     } finally {
       setLoadingMoreFeed(false)

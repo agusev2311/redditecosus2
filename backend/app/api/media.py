@@ -439,6 +439,7 @@ def list_media():
     session = SessionLocal()
     try:
         query = session.query(MediaItem).options(load_only(*_MEDIA_LIST_COLUMNS))
+        needs_distinct = False
         if g.current_user.role.value != "admin":
             query = query.filter(MediaItem.owner_id == g.current_user.id)
         elif request.args.get("owner_id"):
@@ -454,6 +455,7 @@ def list_media():
                     Tag.name.ilike(f"%{search.lower().replace(' ', '_')}%"),
                 )
             )
+            needs_distinct = True
 
         if request.args.get("kind"):
             query = query.filter(MediaItem.kind == request.args["kind"])
@@ -482,7 +484,8 @@ def list_media():
             (request.args.get("limit") or "").strip() or None,
             default=_MEDIA_PAGE_LIMIT_DEFAULT,
         )
-        ordered_query = query.distinct().order_by(MediaItem.created_at.desc(), MediaItem.id.desc())
+        ordered_query = query.distinct() if needs_distinct else query
+        ordered_query = ordered_query.order_by(MediaItem.created_at.desc(), MediaItem.id.desc())
         page = ordered_query.limit(limit + 1).all()
         has_more = len(page) > limit
         rows = page[:limit]

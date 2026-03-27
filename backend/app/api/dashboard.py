@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask import Blueprint, g, jsonify
-from sqlalchemy import or_
+from sqlalchemy import case, func, or_
 
 from app.db.session import SessionLocal
 from app.models import AuditLog, MediaItem, MediaKind, ProcessingJob, ProcessingStatus, SafetyRating, User
@@ -19,32 +19,54 @@ dashboard_bp = Blueprint("dashboard", __name__)
 
 
 def _build_media_counts(media_query):
-    total_media = media_query.count()
-    ai_ready_count = media_query.filter(
-        or_(
-            MediaItem.ai_payload.is_not(None),
-            MediaItem.description.is_not(None),
-        )
-    ).count()
+    counts = media_query.with_entities(
+        func.count(MediaItem.id).label("total_media"),
+        func.sum(
+            case(
+                (
+                    or_(
+                        MediaItem.ai_payload.is_not(None),
+                        MediaItem.description.is_not(None),
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ).label("ai_ready"),
+        func.sum(case((MediaItem.kind == MediaKind.image, 1), else_=0)).label("image_count"),
+        func.sum(case((MediaItem.kind == MediaKind.gif, 1), else_=0)).label("gif_count"),
+        func.sum(case((MediaItem.kind == MediaKind.video, 1), else_=0)).label("video_count"),
+        func.sum(case((MediaItem.processing_status == ProcessingStatus.pending, 1), else_=0)).label("pending_count"),
+        func.sum(case((MediaItem.processing_status == ProcessingStatus.processing, 1), else_=0)).label("processing_count"),
+        func.sum(case((MediaItem.processing_status == ProcessingStatus.complete, 1), else_=0)).label("complete_count"),
+        func.sum(case((MediaItem.processing_status == ProcessingStatus.failed, 1), else_=0)).label("failed_count"),
+        func.sum(case((MediaItem.safety_rating == SafetyRating.sfw, 1), else_=0)).label("sfw_count"),
+        func.sum(case((MediaItem.safety_rating == SafetyRating.questionable, 1), else_=0)).label("questionable_count"),
+        func.sum(case((MediaItem.safety_rating == SafetyRating.nsfw, 1), else_=0)).label("nsfw_count"),
+        func.sum(case((MediaItem.safety_rating == SafetyRating.unknown, 1), else_=0)).label("unknown_count"),
+    ).one()
+
+    total_media = int(counts.total_media or 0)
+    ai_ready_count = int(counts.ai_ready or 0)
     return {
         "media": total_media,
         "ai_ready": ai_ready_count,
         "media_by_kind": {
-            "image": media_query.filter(MediaItem.kind == MediaKind.image).count(),
-            "gif": media_query.filter(MediaItem.kind == MediaKind.gif).count(),
-            "video": media_query.filter(MediaItem.kind == MediaKind.video).count(),
+            "image": int(counts.image_count or 0),
+            "gif": int(counts.gif_count or 0),
+            "video": int(counts.video_count or 0),
         },
         "media_by_status": {
-            "pending": media_query.filter(MediaItem.processing_status == ProcessingStatus.pending).count(),
-            "processing": media_query.filter(MediaItem.processing_status == ProcessingStatus.processing).count(),
-            "complete": media_query.filter(MediaItem.processing_status == ProcessingStatus.complete).count(),
-            "failed": media_query.filter(MediaItem.processing_status == ProcessingStatus.failed).count(),
+            "pending": int(counts.pending_count or 0),
+            "processing": int(counts.processing_count or 0),
+            "complete": int(counts.complete_count or 0),
+            "failed": int(counts.failed_count or 0),
         },
         "media_by_safety": {
-            "sfw": media_query.filter(MediaItem.safety_rating == SafetyRating.sfw).count(),
-            "questionable": media_query.filter(MediaItem.safety_rating == SafetyRating.questionable).count(),
-            "nsfw": media_query.filter(MediaItem.safety_rating == SafetyRating.nsfw).count(),
-            "unknown": media_query.filter(MediaItem.safety_rating == SafetyRating.unknown).count(),
+            "sfw": int(counts.sfw_count or 0),
+            "questionable": int(counts.questionable_count or 0),
+            "nsfw": int(counts.nsfw_count or 0),
+            "unknown": int(counts.unknown_count or 0),
         },
     }
 

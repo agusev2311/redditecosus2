@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.models import AuditLog, JobStatus, MediaItem, ProcessingJob, ProcessingStatus
@@ -44,10 +44,16 @@ def build_processing_stats(
     now = datetime.now(timezone.utc)
     last_day = now - timedelta(hours=24)
 
-    queued_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.pending).count()
-    processing_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.processing).count()
-    failed_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.failed).count()
-    complete_count = media_query.filter(MediaItem.processing_status == ProcessingStatus.complete).count()
+    media_status_rows = (
+        media_query.with_entities(MediaItem.processing_status, func.count(MediaItem.id))
+        .group_by(MediaItem.processing_status)
+        .all()
+    )
+    media_status_counts = {status: int(count or 0) for status, count in media_status_rows}
+    queued_count = media_status_counts.get(ProcessingStatus.pending, 0)
+    processing_count = media_status_counts.get(ProcessingStatus.processing, 0)
+    failed_count = media_status_counts.get(ProcessingStatus.failed, 0)
+    complete_count = media_status_counts.get(ProcessingStatus.complete, 0)
 
     completed_sample = (
         jobs_query.filter(
@@ -87,25 +93,24 @@ def build_processing_stats(
         if job.payload and job.payload.get("metrics", {}).get("reasoning_tokens") is not None
     ]
 
-    completed_last_24h = (
-        jobs_query.filter(
-            ProcessingJob.status == JobStatus.complete,
+    recent_job_rows = (
+        jobs_query.with_entities(ProcessingJob.status, func.count(ProcessingJob.id))
+        .filter(
+            ProcessingJob.status.in_([JobStatus.complete, JobStatus.failed]),
             ProcessingJob.completed_at.is_not(None),
             ProcessingJob.completed_at >= last_day,
-        ).count()
+        )
+        .group_by(ProcessingJob.status)
+        .all()
     )
+    recent_job_counts = {status: int(count or 0) for status, count in recent_job_rows}
+    completed_last_24h = recent_job_counts.get(JobStatus.complete, 0)
     oldest_queued_job = (
         jobs_query.filter(ProcessingJob.status == JobStatus.queued)
         .order_by(ProcessingJob.created_at.asc())
         .first()
     )
-    failed_last_24h = (
-        jobs_query.filter(
-            ProcessingJob.status == JobStatus.failed,
-            ProcessingJob.completed_at.is_not(None),
-            ProcessingJob.completed_at >= last_day,
-        ).count()
-    )
+    failed_last_24h = recent_job_counts.get(JobStatus.failed, 0)
 
     active_logs_query = logs_query if logs_query is not None else session.query(AuditLog)
     recent_failures = (

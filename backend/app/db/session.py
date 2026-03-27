@@ -69,6 +69,27 @@ def _run_schema_migrations() -> None:
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_media_items_owner_created_at_id ON media_items (owner_id, created_at DESC, id DESC)"
         )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_media_items_owner_processing_status ON media_items (owner_id, processing_status)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_media_items_owner_kind ON media_items (owner_id, kind)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_media_items_owner_safety_rating ON media_items (owner_id, safety_rating)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_processing_jobs_status_created_at ON processing_jobs (status, created_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_processing_jobs_owner_status_created_at ON processing_jobs (owner_id, status, created_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_processing_jobs_status_completed_at ON processing_jobs (status, completed_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_audit_logs_event_type_created_at ON audit_logs (event_type, created_at)"
+        )
 
 
 def is_missing_table_error(exc: Exception) -> bool:

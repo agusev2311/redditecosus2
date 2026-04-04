@@ -7,10 +7,11 @@ import type {
   TagCatalogPayload,
   UploadResponse,
   User,
+  UserRole,
 } from './types'
 import type { OverviewPayload } from './types'
 
-export type WorkspaceTab = 'library' | 'feed' | 'tags' | 'processing' | 'backups' | 'activity' | 'admin'
+export type WorkspaceTab = 'library' | 'feed' | 'shares' | 'tags' | 'processing' | 'backups' | 'activity' | 'admin'
 
 export type TabDefinition = {
   id: WorkspaceTab
@@ -143,15 +144,23 @@ export const STORAGE_COLORS: Record<string, string> = {
   free: 'rgba(255, 255, 255, 0.45)',
 }
 
-export function workspaceTabs(isAdmin: boolean): TabDefinition[] {
+export function workspaceTabs(role: UserRole | undefined): TabDefinition[] {
+  if (role === 'guest') {
+    return [
+      { id: 'library', short: 'LB', label: 'Библиотека', title: 'Гостевая библиотека', description: 'Просмотр разрешенных мемов с учетом whitelist и -тегов' },
+      { id: 'feed', short: 'FD', label: 'Лента', title: 'Гостевая лента', description: 'Просмотр разрешенных мемов по времени загрузки' },
+    ]
+  }
+
   return [
     { id: 'library', short: 'LB', label: 'Библиотека', title: 'Медиатека', description: 'Быстрый поиск, загрузка и просмотр файлов' },
     { id: 'feed', short: 'FD', label: 'Лента', title: 'Лента загрузок', description: 'История медиа по времени с порционной подгрузкой' },
+    { id: 'shares', short: 'SH', label: 'Ссылки', title: 'Share Links', description: 'Публичные ссылки на мемы с лимитами и быстрым сжиганием' },
     { id: 'tags', short: 'TG', label: 'Теги', title: 'Каталог тегов', description: 'AI-описания тегов, свойства и лидерборд' },
     { id: 'processing', short: 'AI', label: 'Обработка', title: 'AI-очередь', description: 'Скорость, backlog и проблемные задания' },
     { id: 'backups', short: 'BK', label: 'Бэкапы', title: 'Резервные копии', description: 'Создание и отправка частей в Telegram' },
     { id: 'activity', short: 'LG', label: 'Логи', title: 'События системы', description: 'Ошибки, сигналы и журнал действий' },
-    ...(isAdmin ? [{ id: 'admin' as const, short: 'AD', label: 'Админ', title: 'Управление', description: 'Диск, пользователи и runtime-конфиг' }] : []),
+    ...(role === 'admin' ? [{ id: 'admin' as const, short: 'AD', label: 'Админ', title: 'Управление', description: 'Диск, пользователи и runtime-конфиг' }] : []),
   ]
 }
 
@@ -264,7 +273,9 @@ export function configValueToInput(value: string | number | boolean) {
 }
 
 export function roleLabel(user: User | null) {
-  return user?.role === 'admin' ? 'Администратор' : 'Участник'
+  if (user?.role === 'admin') return 'Администратор'
+  if (user?.role === 'guest') return 'Гость'
+  return 'Участник'
 }
 
 export function kindLabel(kind: MediaItem['kind']) {

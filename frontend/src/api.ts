@@ -1,4 +1,4 @@
-import type { BackupItem, DangerResetResponse, DiskUsagePayload, JobItem, MediaItem, MediaListResponse, OverviewPayload, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, TagCatalogPayload, TriggerTagBackfillResponse, UploadResponse, User } from './types'
+import type { BackupImportResponse, BackupItem, DangerResetResponse, DiskUsagePayload, GuestAccess, JobItem, MediaItem, MediaListResponse, OverviewPayload, PublicShareResponse, ReindexAllResponse, RetryFailedJobsResponse, RuntimeConfigItem, ShareLinkItem, ShareListResponse, TagCatalogPayload, TriggerTagBackfillResponse, UploadResponse, User } from './types'
 
 const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ??
@@ -189,6 +189,38 @@ async function uploadFileWithResume(token: string, file: File, tracker: Progress
   return completeUpload(token, upload.upload_id)
 }
 
+async function uploadBackupFileWithResume(token: string, file: File, confirmation: string, tracker: ProgressTracker) {
+  const { upload } = await initBackupImportUpload(token, file)
+  tracker.addConfirmedBytes(upload.uploaded_bytes)
+
+  const uploadedParts = new Set(upload.uploaded_parts)
+  const missingParts = Array.from({ length: upload.total_parts }, (_, partIndex) => partIndex).filter((partIndex) => !uploadedParts.has(partIndex))
+
+  await runWithConcurrency(missingParts, MAX_PARALLEL_UPLOAD_PARTS, async (partIndex) => {
+    const chunkStart = partIndex * upload.chunk_size
+    const chunkEnd = Math.min(chunkStart + upload.chunk_size, file.size)
+    const chunk = file.slice(chunkStart, chunkEnd)
+    const chunkKey = `${upload.upload_id}:${partIndex}`
+
+    for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt += 1) {
+      try {
+        await sendChunk(token, upload.upload_id, partIndex, chunk, (loaded) => tracker.updateChunkProgress(chunkKey, loaded))
+        tracker.clearChunkProgress(chunkKey)
+        tracker.addConfirmedBytes(chunk.size)
+        return
+      } catch (error) {
+        tracker.clearChunkProgress(chunkKey)
+        if (attempt === MAX_UPLOAD_RETRIES - 1) {
+          throw error
+        }
+        await sleep(400 * (attempt + 1))
+      }
+    }
+  })
+
+  return completeBackupImportUpload(token, upload.upload_id, confirmation)
+}
+
 export function mediaAssetUrl(path: string | null | undefined, token?: string) {
   if (!path) {
     return ''
@@ -197,6 +229,12 @@ export function mediaAssetUrl(path: string | null | undefined, token?: string) {
   if (token) {
     url.searchParams.set('token', token)
   }
+  return url.toString()
+}
+
+export function backupDownloadUrl(backupId: string, token: string) {
+  const url = new URL(`/api/backups/${backupId}/download`, API_BASE)
+  url.searchParams.set('token', token)
   return url.toString()
 }
 
@@ -245,12 +283,80 @@ export function getMedia(token: string, mediaId: string, signal?: AbortSignal) {
   return request<{ item: MediaItem }>(`/api/media/${mediaId}`, {}, token, signal)
 }
 
+export function listShares(token: string, params?: Record<string, string | undefined>) {
+  const url = buildUrl('/api/shares', params)
+  return request<ShareListResponse>(url, {}, token)
+}
+
+export function createShare(token: string, mediaId: string, payload: { expires_in_hours?: number | null; max_views?: number | null }) {
+  return request<{ share: ShareLinkItem }>(
+    `/api/media/${mediaId}/shares`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    token,
+  )
+}
+
+function initBackupImportUpload(token: string, file: File) {
+  return request<{ upload: UploadSessionState }>(
+    '/api/backups/import/uploads/init',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        file_name: file.name,
+        file_size: file.size,
+        last_modified: file.lastModified || undefined,
+        content_type: file.type || undefined,
+        chunk_size: resolveChunkSize(file),
+      }),
+    },
+    token,
+  )
+}
+
+function completeBackupImportUpload(token: string, uploadId: string, confirmation: string) {
+  return request<BackupImportResponse>(
+    `/api/backups/import/uploads/${uploadId}/complete`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ confirmation }),
+    },
+    token,
+  )
+}
+
+export function burnShare(token: string, shareId: string) {
+  return request<{ share: ShareLinkItem }>(
+    `/api/shares/${shareId}/burn`,
+    {
+      method: 'POST',
+    },
+    token,
+  )
+}
+
+export function getPublicShare(shareId: string) {
+  return request<PublicShareResponse>(`/api/shares/public/${shareId}`)
+}
+
 export function updateMedia(token: string, mediaId: string, payload: { description?: string; safety_rating?: string; safety_tags?: string[] }) {
   return request<{ item: MediaItem }>(
     `/api/media/${mediaId}`,
     {
       method: 'PATCH',
       body: JSON.stringify(payload),
+    },
+    token,
+  )
+}
+
+export function deleteMedia(token: string, mediaId: string) {
+  return request<{ deleted: boolean; media_id: string; original_filename: string }>(
+    `/api/media/${mediaId}`,
+    {
+      method: 'DELETE',
     },
     token,
   )
@@ -274,12 +380,26 @@ export function listBackups(token: string) {
   return request<{ items: BackupItem[] }>('/api/backups', {}, token)
 }
 
-export function createBackup(token: string, scope: 'metadata' | 'full', sendToTelegram: boolean) {
+export function createBackup(token: string, scope: 'metadata' | 'full', delivery: 'telegram' | 'download') {
   return request<{ backup_id: string }>(
     '/api/backups',
     {
       method: 'POST',
-      body: JSON.stringify({ scope, send_to_telegram: sendToTelegram }),
+      body: JSON.stringify({ scope, delivery }),
+    },
+    token,
+  )
+}
+
+export function importBackupFiles(token: string, files: File[], confirmation: string) {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  form.append('confirmation', confirmation)
+  return request<BackupImportResponse>(
+    '/api/backups/import',
+    {
+      method: 'POST',
+      body: form,
     },
     token,
   )
@@ -339,7 +459,7 @@ export function resumeAIProxy(token: string) {
   )
 }
 
-export function createUser(token: string, payload: { username: string; password: string; role: 'admin' | 'member'; telegram_username: string }) {
+export function createUser(token: string, payload: { username: string; password: string; role: User['role']; telegram_username: string; guest_access?: GuestAccess }) {
   return request<{ user: User }>(
     '/api/users',
     {
@@ -412,4 +532,35 @@ export async function uploadFiles(token: string, files: File[], onProgress: (pro
     },
     { items: [], archives: [] },
   )
+}
+
+export async function uploadBackupImportFile(token: string, file: File, confirmation: string, onProgress: (progress: number) => void) {
+  const totalBytes = Math.max(file.size, 1)
+  let confirmedBytes = 0
+  const chunkProgress = new Map<string, number>()
+
+  const updateProgress = () => {
+    const inFlightBytes = Array.from(chunkProgress.values()).reduce((sum, value) => sum + value, 0)
+    const totalLoaded = Math.min(confirmedBytes + inFlightBytes, totalBytes)
+    onProgress(Math.round((totalLoaded / totalBytes) * 100))
+  }
+
+  const tracker: ProgressTracker = {
+    addConfirmedBytes(bytes) {
+      confirmedBytes += bytes
+      updateProgress()
+    },
+    updateChunkProgress(key, loaded) {
+      chunkProgress.set(key, loaded)
+      updateProgress()
+    },
+    clearChunkProgress(key) {
+      chunkProgress.delete(key)
+      updateProgress()
+    },
+  }
+
+  const result = await uploadBackupFileWithResume(token, file, confirmation, tracker)
+  onProgress(100)
+  return result
 }

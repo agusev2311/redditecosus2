@@ -1,18 +1,25 @@
 import { type ChangeEvent, type DragEvent, type FormEvent, startTransition, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 import {
+  backupDownloadUrl,
   bootstrap,
+  burnShare,
   createBackup,
+  createShare,
   createUser,
+  deleteMedia,
+  importBackupFiles,
   getBootstrapStatus,
   getMedia,
   getOverview,
+  getPublicShare,
   getRuntimeConfig,
   getStorage,
   getUsers,
   listBackups,
   listJobs,
   listMedia,
+  listShares,
   listTags,
   login,
   me,
@@ -24,9 +31,10 @@ import {
   triggerTagBackfill,
   updateMedia,
   updateRuntimeConfig,
+  uploadBackupImportFile,
   uploadFiles,
 } from './api'
-import type { BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, RuntimeConfigItem, SafetyRating, TagCatalogPayload, User } from './types'
+import type { BackupImportResponse, BackupItem, DiskUsagePayload, JobItem, MediaItem, OverviewPayload, RuntimeConfigItem, SafetyRating, ShareLinkItem, TagCatalogPayload, User } from './types'
 import {
   ActivityTab,
   AdminTab,
@@ -36,7 +44,9 @@ import {
   FeedTab,
   LibraryTab,
   MediaViewerModal,
+  PublicShareScreen,
   ProcessingTab,
+  SharesTab,
   TagsTab,
   TagDetailsSheet,
   WorkspaceAlerts,
@@ -62,19 +72,42 @@ import {
   workspaceTabs,
 } from './workspace-helpers'
 
+const emptyNewUserForm = {
+  username: '',
+  password: '',
+  telegram: '',
+  role: 'member' as User['role'],
+  guestAllowedOwnerIds: [] as number[],
+  guestAllowedTags: '',
+  guestBlockedTags: '',
+}
+
 function App() {
+  const initialShareId = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('share') ?? ''
+    : ''
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? '')
+  const [publicShareId, setPublicShareId] = useState(initialShareId)
+  const [publicShare, setPublicShare] = useState<ShareLinkItem | null>(null)
+  const [loadingPublicShare, setLoadingPublicShare] = useState(Boolean(initialShareId))
+  const [publicShareError, setPublicShareError] = useState('')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [needsBootstrap, setNeedsBootstrap] = useState<boolean | null>(null)
   const [overview, setOverview] = useState<OverviewPayload>(emptyOverview)
   const [media, setMedia] = useState<MediaItem[]>([])
   const [feedItems, setFeedItems] = useState<MediaItem[]>([])
+  const [shares, setShares] = useState<ShareLinkItem[]>([])
   const [mediaCursor, setMediaCursor] = useState<string | null>(null)
   const [mediaHasMore, setMediaHasMore] = useState(false)
   const [feedCursor, setFeedCursor] = useState<string | null>(null)
   const [feedHasMore, setFeedHasMore] = useState(false)
   const [jobs, setJobs] = useState<JobItem[]>([])
   const [backups, setBackups] = useState<BackupItem[]>([])
+  const [backupImportConfirmation, setBackupImportConfirmation] = useState('')
+  const [creatingBackupKey, setCreatingBackupKey] = useState('')
+  const [importingBackupParts, setImportingBackupParts] = useState(false)
+  const [importingBackupArchive, setImportingBackupArchive] = useState(false)
+  const [backupImportProgress, setBackupImportProgress] = useState(0)
   const [storage, setStorage] = useState<DiskUsagePayload | null>(null)
   const [users, setUsers] = useState<User[]>([])
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigItem[]>([])
@@ -94,6 +127,11 @@ function App() {
   const [tagKindFilter, setTagKindFilter] = useState('')
   const [tagDescribedFilter, setTagDescribedFilter] = useState('')
   const [savingSafety, setSavingSafety] = useState(false)
+  const [deletingMediaId, setDeletingMediaId] = useState('')
+  const [creatingShare, setCreatingShare] = useState(false)
+  const [burningShareId, setBurningShareId] = useState('')
+  const [shareForm, setShareForm] = useState({ expiresInHours: '', maxViews: '' })
+  const [latestShareId, setLatestShareId] = useState('')
   const [backfillingTags, setBackfillingTags] = useState(false)
   const [safetyForm, setSafetyForm] = useState<{ rating: SafetyRating; tags: string }>({ rating: 'unknown', tags: '' })
   const [refreshNonce, setRefreshNonce] = useState(0)
@@ -107,8 +145,8 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [authForm, setAuthForm] = useState({ username: '', password: '', telegram: '' })
-  const [newUserForm, setNewUserForm] = useState({ username: '', password: '', telegram: '', role: 'member' as 'admin' | 'member' })
-  const [activeTab, setActiveTab] = useState<'library' | 'feed' | 'tags' | 'processing' | 'backups' | 'activity' | 'admin'>('library')
+  const [newUserForm, setNewUserForm] = useState(emptyNewUserForm)
+  const [activeTab, setActiveTab] = useState<'library' | 'feed' | 'shares' | 'tags' | 'processing' | 'backups' | 'activity' | 'admin'>('library')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [retryingFailed, setRetryingFailed] = useState(false)
@@ -124,6 +162,64 @@ function App() {
   const deferredSearch = useDeferredValue(searchInput)
   const deferredTagSearch = useDeferredValue(tagSearch)
   const isAdmin = currentUser?.role === 'admin'
+  const isGuest = currentUser?.role === 'guest'
+  const canManageMedia = !isGuest
+  const buildBackupDownloadLink = (backupId: string) => backupDownloadUrl(backupId, token)
+  const parsePublicShareError = (reason: unknown) => {
+    if (!(reason instanceof Error)) return 'unavailable'
+    try {
+      const payload = JSON.parse(reason.message) as { status?: string }
+      return payload.status ?? 'unavailable'
+    } catch {
+      return 'unavailable'
+    }
+  }
+  const parseBackupImportError = (reason: unknown, fallback: string) => {
+    if (!(reason instanceof Error)) return fallback
+    try {
+      const payload = JSON.parse(reason.message) as { error?: string; confirmation_phrase?: string }
+      if (payload.error) {
+        return payload.confirmation_phrase ? `${payload.error}. Подтверждение: ${payload.confirmation_phrase}` : payload.error
+      }
+    } catch {
+      return reason.message || fallback
+    }
+    return reason.message || fallback
+  }
+
+  useEffect(() => {
+    if (!publicShareId) {
+      setPublicShare(null)
+      setPublicShareError('')
+      setLoadingPublicShare(false)
+      return
+    }
+
+    let cancelled = false
+    setLoadingPublicShare(true)
+    setPublicShareError('')
+    void getPublicShare(publicShareId)
+      .then((payload) => {
+        if (!cancelled) {
+          setPublicShare(payload.share)
+        }
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setPublicShare(null)
+          setPublicShareError(parsePublicShareError(reason))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingPublicShare(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [publicShareId])
 
   const clearWorkspaceState = () => {
     setOverview(emptyOverview)
@@ -133,6 +229,7 @@ function App() {
     setRuntimeConfigForm({})
     setMedia([])
     setFeedItems([])
+    setShares([])
     setMediaCursor(null)
     setMediaHasMore(false)
     setFeedCursor(null)
@@ -148,6 +245,11 @@ function App() {
     setTagDetailOpen(false)
     setJobs([])
     setBackups([])
+    setBackupImportConfirmation('')
+    setCreatingBackupKey('')
+    setImportingBackupParts(false)
+    setImportingBackupArchive(false)
+    setBackupImportProgress(0)
     setSearchInput('')
     setKindFilter('')
     setRatingFilter('')
@@ -157,6 +259,10 @@ function App() {
     setTagSearch('')
     setTagKindFilter('')
     setTagDescribedFilter('')
+    setDeletingMediaId('')
+    setShareForm({ expiresInHours: '', maxViews: '' })
+    setLatestShareId('')
+    setNewUserForm(emptyNewUserForm)
     setActiveTab('library')
     setMobileSidebarOpen(false)
     setDragActive(false)
@@ -165,10 +271,13 @@ function App() {
   }
 
   useEffect(() => {
+    if (publicShareId) {
+      return
+    }
     void getBootstrapStatus()
       .then((data) => setNeedsBootstrap(data.needs_bootstrap))
       .catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load bootstrap status'))
-  }, [])
+  }, [publicShareId])
 
   useEffect(() => {
     if (!token) {
@@ -326,6 +435,23 @@ function App() {
   }, [token, currentUser, activeTab, refreshNonce])
 
   useEffect(() => {
+    if (!token || !currentUser || isGuest || activeTab !== 'shares') return
+    let cancelled = false
+    void listShares(token).then((payload) => {
+      if (!cancelled) {
+        setShares(payload.items)
+      }
+    }).catch((reason) => {
+      if (!cancelled) {
+        setError(reason instanceof Error ? reason.message : 'Failed to load share links')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, currentUser, isGuest, activeTab, refreshNonce])
+
+  useEffect(() => {
     if (!token || !currentUser || activeTab !== 'tags') return
     let cancelled = false
     void listTags(token, {
@@ -379,6 +505,11 @@ function App() {
   }, [isAdmin])
 
   useEffect(() => {
+    if (!isGuest) return
+    setShares([])
+  }, [isGuest])
+
+  useEffect(() => {
     if (!selectedMedia) return
     const refreshed = [...media, ...feedItems].find((item) => item.id === selectedMedia.id)
     if (!refreshed) return
@@ -403,7 +534,27 @@ function App() {
       rating: selectedMedia.safety_rating,
       tags: extractSafetyTags(selectedMedia).join(', '),
     })
+    setShareForm({ expiresInHours: '', maxViews: '' })
   }, [selectedMedia])
+
+  useEffect(() => {
+    if (!token || !selectedMedia || !viewerOpen || !canManageMedia) return
+    let cancelled = false
+    void listShares(token, { media_id: selectedMedia.id }).then((payload) => {
+      if (cancelled) return
+      setShares((current) => {
+        const remaining = current.filter((item) => item.media_id !== selectedMedia.id)
+        return [...payload.items, ...remaining]
+      })
+    }).catch((reason) => {
+      if (!cancelled) {
+        setError((current) => current || (reason instanceof Error ? reason.message : 'Failed to load share links'))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [token, selectedMedia, viewerOpen, canManageMedia])
 
   useEffect(() => {
     if (!tagCatalog.items.length) {
@@ -419,7 +570,10 @@ function App() {
   }, [tagCatalog, selectedTag])
 
   useEffect(() => {
-    if (currentUser?.role !== 'admin' && activeTab === 'admin') setActiveTab('library')
+    const availableTabs = workspaceTabs(currentUser?.role)
+    if (!availableTabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab(availableTabs[0].id)
+    }
   }, [activeTab, currentUser])
 
   useEffect(() => {
@@ -521,16 +675,81 @@ function App() {
     }
   }
 
-  const handleCreateBackup = async (scope: 'metadata' | 'full') => {
-    if (!token) return
+  const handleCreateBackup = async (scope: 'metadata' | 'full', delivery: 'telegram' | 'download') => {
+    if (!token || creatingBackupKey) return
     setError('')
     setNotice('')
+    setCreatingBackupKey(`${scope}:${delivery}`)
     try {
-      await createBackup(token, scope, true)
+      await createBackup(token, scope, delivery)
+      setNotice(delivery === 'telegram' ? 'Бэкап поставлен в очередь на упаковку и отправку в Telegram' : 'Бэкап поставлен в очередь на подготовку downloadable файла')
       setRefreshNonce((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Backup request failed')
+    } finally {
+      setCreatingBackupKey('')
     }
+  }
+
+  const handleBackupImportSuccess = (result: BackupImportResponse) => {
+    setNotice(result.message)
+    setBackupImportConfirmation('')
+    setRefreshNonce((value) => value + 1)
+    if (!result.reauth_required) {
+      return
+    }
+
+    localStorage.removeItem(TOKEN_KEY)
+    setToken('')
+    setCurrentUser(null)
+    clearWorkspaceState()
+    setNeedsBootstrap(false)
+  }
+
+  const handleImportBackupParts = async (files: File[]) => {
+    if (!token || importingBackupParts || files.length === 0) return false
+    setError('')
+    setNotice('')
+    setImportingBackupParts(true)
+    try {
+      const result = await importBackupFiles(token, files, backupImportConfirmation)
+      handleBackupImportSuccess(result)
+      return true
+    } catch (reason) {
+      setError(parseBackupImportError(reason, 'Backup import failed'))
+      return false
+    } finally {
+      setImportingBackupParts(false)
+    }
+  }
+
+  const handleImportBackupArchive = async (file: File | null) => {
+    if (!token || importingBackupArchive || !file) return false
+    setError('')
+    setNotice('')
+    setBackupImportProgress(0)
+    setImportingBackupArchive(true)
+    try {
+      const result = await uploadBackupImportFile(token, file, backupImportConfirmation, setBackupImportProgress)
+      handleBackupImportSuccess(result)
+      return true
+    } catch (reason) {
+      setError(parseBackupImportError(reason, 'Backup import upload failed'))
+      return false
+    } finally {
+      setImportingBackupArchive(false)
+      window.setTimeout(() => setBackupImportProgress(0), 800)
+    }
+  }
+
+  const parseOptionalPositiveInt = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const parsed = Number.parseInt(trimmed, 10)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error('Введите положительное целое число или оставьте поле пустым')
+    }
+    return parsed
   }
 
   const handleCreateUser = async (event: FormEvent) => {
@@ -538,12 +757,94 @@ function App() {
     if (!token) return
     setError('')
     setNotice('')
+    if (newUserForm.role === 'guest' && newUserForm.guestAllowedOwnerIds.length === 0) {
+      setError('Для guest-аккаунта выберите хотя бы одного автора, чьи мемы можно показывать')
+      return
+    }
     try {
-      await createUser(token, { username: newUserForm.username, password: newUserForm.password, role: newUserForm.role, telegram_username: newUserForm.telegram })
-      setNewUserForm({ username: '', password: '', telegram: '', role: 'member' })
+      await createUser(token, {
+        username: newUserForm.username,
+        password: newUserForm.password,
+        role: newUserForm.role,
+        telegram_username: newUserForm.telegram,
+        guest_access: newUserForm.role === 'guest'
+          ? {
+              allowed_owner_ids: newUserForm.guestAllowedOwnerIds,
+              allowed_tags: parseTagInput(newUserForm.guestAllowedTags),
+              blocked_tags: parseTagInput(newUserForm.guestBlockedTags),
+            }
+          : undefined,
+      })
+      setNewUserForm(emptyNewUserForm)
       setRefreshNonce((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'User creation failed')
+    }
+  }
+
+  const handleCreateShare = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!token || !selectedMedia || !canManageMedia || creatingShare) return
+    setError('')
+    setNotice('')
+    setCreatingShare(true)
+    try {
+      const expiresInHours = parseOptionalPositiveInt(shareForm.expiresInHours)
+      const maxViews = parseOptionalPositiveInt(shareForm.maxViews)
+      const response = await createShare(token, selectedMedia.id, {
+        expires_in_hours: expiresInHours,
+        max_views: maxViews,
+      })
+      setShares((current) => [response.share, ...current.filter((item) => item.id !== response.share.id)])
+      setLatestShareId(response.share.id)
+      setShareForm({ expiresInHours: '', maxViews: '' })
+      setNotice('Шаринг-ссылка создана')
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(response.share.share_url)
+          setNotice('Шаринг-ссылка создана и скопирована в буфер')
+        } catch {
+          setNotice('Шаринг-ссылка создана')
+        }
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to create share')
+    } finally {
+      setCreatingShare(false)
+    }
+  }
+
+  const handleBurnShare = async (shareId: string) => {
+    if (!token || burningShareId || !canManageMedia) return
+    setError('')
+    setNotice('')
+    setBurningShareId(shareId)
+    try {
+      const response = await burnShare(token, shareId)
+      setShares((current) => current.map((item) => (item.id === response.share.id ? response.share : item)))
+      if (latestShareId === response.share.id) {
+        setLatestShareId('')
+      }
+      setNotice('Ссылка сожжена')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to burn share')
+    } finally {
+      setBurningShareId('')
+    }
+  }
+
+  const handleCopyShare = async (shareUrl: string) => {
+    setError('')
+    setNotice('')
+    if (!navigator.clipboard?.writeText) {
+      setNotice(shareUrl)
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setNotice('Ссылка скопирована')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to copy share link')
     }
   }
 
@@ -567,6 +868,38 @@ function App() {
       setRefreshNonce((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Reindex failed')
+    }
+  }
+
+  const handleDeleteMedia = async (mediaItem: MediaItem) => {
+    if (!token || !canManageMedia || deletingMediaId) return
+    const confirmed = window.confirm(
+      `Удалить "${mediaItem.original_filename}" с сервера полностью?\n\nБудут удалены сам файл, превью, share-ссылки и связанные jobs. Это действие нельзя отменить.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setError('')
+    setNotice('')
+    setDeletingMediaId(mediaItem.id)
+    try {
+      await deleteMedia(token, mediaItem.id)
+      setMedia((current) => current.filter((item) => item.id !== mediaItem.id))
+      setFeedItems((current) => current.filter((item) => item.id !== mediaItem.id))
+      setShares((current) => current.filter((item) => item.media_id !== mediaItem.id))
+      if (shares.some((item) => item.media_id === mediaItem.id && item.id === latestShareId)) {
+        setLatestShareId('')
+      }
+      if (selectedMedia?.id === mediaItem.id) {
+        closeMediaViewer()
+      }
+      setNotice(`Медиа "${mediaItem.original_filename}" удалено с сервера`)
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Media delete failed')
+    } finally {
+      setDeletingMediaId('')
     }
   }
 
@@ -837,9 +1170,30 @@ function App() {
   const topTags = topTagsFromMedia(media)
   const leaderboardTags = tagCatalog.leaderboard.length ? tagCatalog.leaderboard : []
   const queueFocus = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 8)
-  const tabs = workspaceTabs(isAdmin)
+  const tabs = workspaceTabs(currentUser?.role)
   const currentTab = tabs.find((tab) => tab.id === activeTab) ?? tabs[0]
   const selectedTagPayload = getSelectedTagDetails(selectedTag)
+  const selectedMediaShares = selectedMedia
+    ? shares
+      .filter((item) => item.media_id === selectedMedia.id)
+      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+    : []
+
+  if (publicShareId) {
+    return (
+      <PublicShareScreen
+        loading={loadingPublicShare}
+        share={publicShare}
+        error={publicShareError}
+        onClose={() => {
+          const url = new URL(window.location.href)
+          url.searchParams.delete('share')
+          window.history.replaceState({}, '', url.toString())
+          setPublicShareId('')
+        }}
+      />
+    )
+  }
 
   if (needsBootstrap === null) return <div className="loading-screen">Loading workspace...</div>
 
@@ -883,6 +1237,7 @@ function App() {
         {activeTab === 'library' ? (
           <LibraryTab
             overview={overview}
+            currentUser={currentUser}
             aiCoverage={aiCoverage}
             completedMedia={completedMedia}
             nsfwMedia={nsfwMedia}
@@ -915,6 +1270,7 @@ function App() {
             mediaHasMore={mediaHasMore}
             onLoadMoreMedia={() => void handleLoadMoreMedia()}
             loadingMoreMedia={loadingMoreMedia}
+            canManageMedia={canManageMedia}
           />
         ) : null}
         {activeTab === 'feed' ? (
@@ -931,6 +1287,15 @@ function App() {
             loadingMoreFeed={loadingMoreFeed}
             token={token}
             onOpenMedia={openMedia}
+          />
+        ) : null}
+        {activeTab === 'shares' ? (
+          <SharesTab
+            shares={shares}
+            token={token}
+            burningShareId={burningShareId}
+            onBurnShare={(shareId) => void handleBurnShare(shareId)}
+            onCopyShare={(shareUrl) => void handleCopyShare(shareUrl)}
           />
         ) : null}
         {activeTab === 'tags' ? (
@@ -964,7 +1329,19 @@ function App() {
           />
         ) : null}
         {activeTab === 'backups' ? (
-          <BackupsTab backups={backups} onCreateBackup={(scope) => void handleCreateBackup(scope)} />
+          <BackupsTab
+            backups={backups}
+            creatingBackupKey={creatingBackupKey}
+            backupImportConfirmation={backupImportConfirmation}
+            importingBackupArchive={importingBackupArchive}
+            importingBackupParts={importingBackupParts}
+            backupImportProgress={backupImportProgress}
+            onCreateBackup={handleCreateBackup}
+            onBackupImportConfirmationChange={setBackupImportConfirmation}
+            onImportBackupArchive={handleImportBackupArchive}
+            onImportBackupParts={handleImportBackupParts}
+            buildBackupDownloadUrl={buildBackupDownloadLink}
+          />
         ) : null}
         {activeTab === 'activity' ? (
           <ActivityTab logs={overview.recent_logs} topTags={topTags} onJumpToTag={handleActivityJumpToTag} />
@@ -1005,10 +1382,21 @@ function App() {
           token={token}
           onClose={closeMediaViewer}
           onReindex={(mediaId) => void handleReindex(mediaId)}
+          onDeleteMedia={(mediaItem) => void handleDeleteMedia(mediaItem)}
           safetyForm={safetyForm}
           onSafetyFormChange={setSafetyForm}
           onSaveSafety={handleSaveSafety}
           savingSafety={savingSafety}
+          deletingMedia={deletingMediaId === selectedMedia.id}
+          canManageMedia={canManageMedia}
+          shareForm={shareForm}
+          onShareFormChange={setShareForm}
+          onCreateShare={handleCreateShare}
+          creatingShare={creatingShare}
+          mediaShares={selectedMediaShares}
+          burningShareId={burningShareId}
+          onBurnShare={(shareId) => void handleBurnShare(shareId)}
+          onCopyShare={(shareUrl) => void handleCopyShare(shareUrl)}
         />
       ) : null}
       <TagDetailsSheet open={tagDetailOpen} selectedTag={selectedTag} selectedTagDetails={selectedTagPayload} onClose={() => setTagDetailOpen(false)} />

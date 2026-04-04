@@ -8,6 +8,7 @@ from app.models import JobStatus, MediaItem, ProcessingJob, User, UserRole
 from app.services.ai_limit_guard import clear_ai_proxy_limit_sleep
 from app.services.audit import audit
 from app.services.danger_zone import DANGER_RESET_CONFIRMATION, full_library_reset
+from app.services.guest_access import apply_guest_access_config, build_guest_access_config, serialize_guest_access
 from app.services.processing import get_processing_coordinator
 from app.services.runtime_config import list_runtime_config_items, update_runtime_config_values
 from app.services.storage import queue_media_for_processing
@@ -23,6 +24,7 @@ def _serialize_user(user: User) -> dict:
         "username": user.username,
         "role": user.role.value,
         "telegram_username": user.telegram_username,
+        "guest_access": serialize_guest_access(user),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 
@@ -44,16 +46,22 @@ def create_user():
     payload = request.get_json(force=True)
     session = SessionLocal()
     try:
+        role = UserRole(payload.get("role", "member"))
+        guest_access_config = build_guest_access_config(session, role=role, payload=payload.get("guest_access"))
         user = User(
             username=payload["username"].strip(),
             password_hash=hash_password(payload["password"]),
-            role=UserRole(payload.get("role", "member")),
+            role=role,
             telegram_username=(payload.get("telegram_username") or "").strip().lstrip("@") or None,
         )
+        apply_guest_access_config(user, guest_access_config)
         session.add(user)
         session.commit()
         audit("admin.user_created", f"Created user {user.username}", actor_id=g.current_user.id, owner_id=user.id)
         return jsonify({"user": _serialize_user(user)}), 201
+    except ValueError as exc:
+        session.rollback()
+        return jsonify({"error": str(exc)}), 400
     finally:
         session.close()
 
@@ -67,15 +75,23 @@ def update_user(user_id: int):
         user = session.get(User, user_id)
         if user is None:
             return jsonify({"error": "Not found"}), 404
+        next_role = user.role
         if "role" in payload:
-            user.role = UserRole(payload["role"])
+            next_role = UserRole(payload["role"])
+            user.role = next_role
         if "telegram_username" in payload:
             user.telegram_username = (payload.get("telegram_username") or "").strip().lstrip("@") or None
         if "password" in payload and payload["password"]:
             user.password_hash = hash_password(payload["password"])
+        if "role" in payload or "guest_access" in payload:
+            guest_access_config = build_guest_access_config(session, role=next_role, payload=payload.get("guest_access"))
+            apply_guest_access_config(user, guest_access_config)
         session.commit()
         audit("admin.user_updated", f"Updated user {user.username}", actor_id=g.current_user.id, owner_id=user.id)
         return jsonify({"user": _serialize_user(user)})
+    except ValueError as exc:
+        session.rollback()
+        return jsonify({"error": str(exc)}), 400
     finally:
         session.close()
 

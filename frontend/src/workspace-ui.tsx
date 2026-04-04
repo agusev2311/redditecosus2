@@ -9,6 +9,7 @@ import type {
   OverviewPayload,
   RuntimeConfigItem,
   SafetyRating,
+  ShareLinkItem,
   TagCatalogItem,
   TagCatalogPayload,
   User,
@@ -76,6 +77,41 @@ function LoadMoreRow({
       <small className="muted">{hint}</small>
     </div>
   )
+}
+
+function shareStatusLabel(status: ShareLinkItem['status']) {
+  if (status === 'active') return 'active'
+  if (status === 'burned') return 'burned'
+  if (status === 'expired') return 'expired'
+  return 'exhausted'
+}
+
+const BACKUP_RESTORE_CONFIRMATION = 'RESTORE BACKUP'
+
+function resolveBackupDelivery(backup: BackupItem): 'telegram' | 'download' {
+  if (backup.delivery_mode === 'telegram' || backup.delivery_mode === 'download') {
+    return backup.delivery_mode
+  }
+  const manifestDelivery = typeof backup.manifest?.delivery_mode === 'string' ? backup.manifest.delivery_mode : ''
+  if (manifestDelivery === 'download' || manifestDelivery === 'telegram') {
+    return manifestDelivery
+  }
+  return backup.parts.length ? 'telegram' : 'download'
+}
+
+function backupDeliveryLabel(delivery: 'telegram' | 'download') {
+  return delivery === 'download' ? 'browser download' : 'telegram'
+}
+
+function backupScopeLabel(scope: BackupItem['scope']) {
+  return scope === 'full' ? 'full backup' : 'metadata backup'
+}
+
+function backupTotalBytes(parts: BackupItem['part_files']) {
+  if (!parts.length || parts.some((item) => typeof item.size_bytes !== 'number')) {
+    return null
+  }
+  return parts.reduce((total, item) => total + (item.size_bytes ?? 0), 0)
 }
 
 export function StatCard({
@@ -171,6 +207,48 @@ function MediaPreview({
   )
 }
 
+function SharePreview({
+  item,
+  token,
+  className,
+}: {
+  item: ShareLinkItem
+  token?: string
+  className: string
+}) {
+  const thumbnailUrl = mediaAssetUrl(item.thumbnail_url, token)
+  const sourceUrl = item.kind === 'video' ? '' : mediaAssetUrl(item.file_url, token)
+  const [currentUrl, setCurrentUrl] = useState(thumbnailUrl || sourceUrl)
+
+  useEffect(() => {
+    setCurrentUrl(thumbnailUrl || sourceUrl)
+  }, [thumbnailUrl, sourceUrl])
+
+  const handleError = () => {
+    if (sourceUrl && currentUrl !== sourceUrl) {
+      setCurrentUrl(sourceUrl)
+      return
+    }
+    setCurrentUrl('')
+  }
+
+  return (
+    <div className={className}>
+      {currentUrl ? (
+        <img
+          src={currentUrl}
+          alt={item.original_filename}
+          loading="lazy"
+          decoding="async"
+          onError={handleError}
+        />
+      ) : (
+        <div className="gallery-empty">{kindLabel(item.kind)}</div>
+      )}
+    </div>
+  )
+}
+
 function MediaCard({
   item,
   token,
@@ -247,6 +325,54 @@ function FeedCard({ item, token, onOpen }: { item: MediaItem; token: string; onO
               {prettifyTag(tag.name)}
             </span>
           ))}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function ShareCard({
+  item,
+  token,
+  burning,
+  onBurn,
+  onCopy,
+}: {
+  item: ShareLinkItem
+  token: string
+  burning: boolean
+  onBurn: () => void
+  onCopy: () => void
+}) {
+  return (
+    <article className="share-card glass-panel">
+      <SharePreview item={item} token={token} className="share-preview" />
+      <div className="share-body">
+        <div className="row-meta">
+          <div className="chip-row">
+            <span className={`badge badge-${item.safety_rating}`}>{ratingLabel(item.safety_rating)}</span>
+            <span className={`badge badge-share-${item.status}`}>{shareStatusLabel(item.status)}</span>
+            <span className="badge">{kindLabel(item.kind)}</span>
+          </div>
+          <small>{formatDate(item.created_at)}</small>
+        </div>
+        <h3 title={item.original_filename}>{item.original_filename}</h3>
+        <div className="detail-grid share-detail-grid">
+          <div><span>Открытий</span><strong>{item.view_count}{item.max_views ? ` / ${item.max_views}` : ''}</strong></div>
+          <div><span>Срок</span><strong>{item.expires_at ? formatDate(item.expires_at) : 'без лимита'}</strong></div>
+          <div><span>Создал</span><strong>{item.created_by_username ?? `#${item.created_by_id}`}</strong></div>
+          <div><span>Осталось</span><strong>{item.views_remaining ?? 'без лимита'}</strong></div>
+        </div>
+        <div className="note-block">
+          <span>Share URL</span>
+          <p>{trimText(item.share_url, item.share_url, 240)}</p>
+        </div>
+        <div className="button-row">
+          <button className="secondary-button" type="button" onClick={onCopy}>Копировать</button>
+          <a className="ghost-button" href={item.share_url} target="_blank" rel="noreferrer">Открыть</a>
+          <button className="danger-button" type="button" onClick={onBurn} disabled={burning || !item.is_active}>
+            {burning ? 'Сжигаем...' : 'Сжечь'}
+          </button>
         </div>
       </div>
     </article>
@@ -505,6 +631,7 @@ export function WorkspaceAlerts({
 
 export function LibraryTab({
   overview,
+  currentUser,
   aiCoverage,
   completedMedia,
   nsfwMedia,
@@ -534,8 +661,10 @@ export function LibraryTab({
   mediaHasMore,
   onLoadMoreMedia,
   loadingMoreMedia,
+  canManageMedia,
 }: {
   overview: OverviewPayload
+  currentUser: User
   aiCoverage: number
   completedMedia: number
   nsfwMedia: number
@@ -565,14 +694,17 @@ export function LibraryTab({
   mediaHasMore: boolean
   onLoadMoreMedia: () => void
   loadingMoreMedia: boolean
+  canManageMedia: boolean
 }) {
   const backlogCount = queueCounts.queued + queueCounts.processing
+  const guestAllowedTags = currentUser.guest_access?.allowed_tags ?? []
+  const guestBlockedTags = currentUser.guest_access?.blocked_tags ?? []
   return (
     <div className="tab-stack">
       <section className="hero-grid">
         <article className="glass-panel hero-panel">
           <div className="panel-head">
-            <div><span>Обзор</span><h2>Большая библиотека под быстрый поиск</h2></div>
+            <div><span>Обзор</span><h2>{currentUser.role === 'guest' ? 'Гостевая подборка мемов' : 'Большая библиотека под быстрый поиск'}</h2></div>
           </div>
           <div className="stat-grid">
             <StatCard label="Всего" value={overview.counts.media} hint="в текущей библиотеке" tone="accent" />
@@ -584,26 +716,43 @@ export function LibraryTab({
             {topTags.map(([tag, count]) => <span key={tag} className="tag-chip">{prettifyTag(tag)} · {count}</span>)}
           </div>
         </article>
-        <section
-          className={`glass-panel upload-dropzone ${dragActive ? 'is-dragging' : ''}`}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-        >
-          <div className="panel-head">
-            <div><span>Загрузка</span><h2>Новый upload-движок</h2></div>
-            <label className="primary-button file-button">Выбрать<input type="file" multiple onChange={onPick} /></label>
-          </div>
-          <p className="lede">Поддерживаются изображения, GIF, видео и архивы с вложенными папками. Загрузка идет chunk-ами в несколько потоков, а при обрыве можно продолжить с уже принятых частей.</p>
-          <div className="dropzone-core">
-            <strong>{dragActive ? 'Отпускайте файлы сюда' : 'Перетащите сюда архивы, видео, GIF или изображения'}</strong>
-            <small>Временные части лежат в staging и автоматически очищаются после импорта или по TTL.</small>
-          </div>
-          <div className="progress-block">
-            <div className="progress-track"><div className="progress-bar" style={{ width: `${uploadProgress}%` }} /></div>
-            <div className="row-meta"><span>{uploadPhaseLabel}</span><strong>{uploadPhaseValue}</strong></div>
-          </div>
-        </section>
+        {canManageMedia ? (
+          <section
+            className={`glass-panel upload-dropzone ${dragActive ? 'is-dragging' : ''}`}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
+            <div className="panel-head">
+              <div><span>Загрузка</span><h2>Новый upload-движок</h2></div>
+              <label className="primary-button file-button">Выбрать<input type="file" multiple onChange={onPick} /></label>
+            </div>
+            <p className="lede">Поддерживаются изображения, GIF, видео и архивы с вложенными папками. Загрузка идет chunk-ами в несколько потоков, а при обрыве можно продолжить с уже принятых частей.</p>
+            <div className="dropzone-core">
+              <strong>{dragActive ? 'Отпускайте файлы сюда' : 'Перетащите сюда архивы, видео, GIF или изображения'}</strong>
+              <small>Временные части лежат в staging и автоматически очищаются после импорта или по TTL.</small>
+            </div>
+            <div className="progress-block">
+              <div className="progress-track"><div className="progress-bar" style={{ width: `${uploadProgress}%` }} /></div>
+              <div className="row-meta"><span>{uploadPhaseLabel}</span><strong>{uploadPhaseValue}</strong></div>
+            </div>
+          </section>
+        ) : (
+          <section className="glass-panel upload-dropzone">
+            <div className="panel-head">
+              <div><span>Гостевой режим</span><h2>Только просмотр разрешенной выборки</h2></div>
+            </div>
+            <p className="lede">Загрузка, reindex и ручная модерация здесь отключены. Вам показываются только мемы от выбранных администратором авторов.</p>
+            <div className="note-block">
+              <span>Tag rules</span>
+              <p>{guestAllowedTags.length ? 'Медиа должно содержать хотя бы один safe-тег из списка ниже.' : 'Safe-теги не заданы: показываются все теги разрешенных авторов, кроме явно запрещенных.'}</p>
+              <div className="chip-row spacious">
+                {guestAllowedTags.length ? guestAllowedTags.map((tag) => <span key={`allow-${tag}`} className="tag-chip">{prettifyTag(tag)}</span>) : <span className="tag-chip">Все теги выбранных авторов</span>}
+                {guestBlockedTags.map((tag) => <span key={`block-${tag}`} className="tag-chip">-{prettifyTag(tag)}</span>)}
+              </div>
+            </div>
+          </section>
+        )}
       </section>
       <section className="glass-panel filter-panel">
         <div className="panel-head"><div><span>Фильтры</span><h2>Поиск по памяти, тегам и AI-описанию</h2></div></div>
@@ -713,6 +862,58 @@ export function FeedTab({
   )
 }
 
+export function SharesTab({
+  shares,
+  token,
+  burningShareId,
+  onBurnShare,
+  onCopyShare,
+}: {
+  shares: ShareLinkItem[]
+  token: string
+  burningShareId: string
+  onBurnShare: (shareId: string) => void
+  onCopyShare: (shareUrl: string) => void
+}) {
+  const activeShares = shares.filter((item) => item.status === 'active').length
+  const limitedShares = shares.filter((item) => item.max_views || item.expires_at).length
+
+  return (
+    <div className="tab-stack">
+      <section className="glass-panel hero-panel">
+        <div className="panel-head">
+          <div><span>Шаринг</span><h2>Публичные ссылки на мемы</h2></div>
+        </div>
+        <div className="stat-grid">
+          <StatCard label="Всего ссылок" value={shares.length} tone="accent" />
+          <StatCard label="Активных" value={activeShares} tone="success" />
+          <StatCard label="С лимитами" value={limitedShares} />
+          <StatCard label="Сожжено/истекло" value={shares.length - activeShares} tone="danger" />
+        </div>
+      </section>
+      <section className="glass-panel gallery-panel">
+        <div className="panel-head">
+          <div><span>Ленты ссылок</span><h2>{shares.length ? `${shares.length} ссылок` : 'Пока нет публичных ссылок'}</h2></div>
+        </div>
+        <div className="shares-grid">
+          {shares.length ? shares.map((share) => (
+            <ShareCard
+              key={share.id}
+              item={share}
+              token={token}
+              burning={burningShareId === share.id}
+              onBurn={() => onBurnShare(share.id)}
+              onCopy={() => onCopyShare(share.share_url)}
+            />
+          )) : (
+            <EmptyState title="Шаринг-ссылок пока нет." description="Откройте любой мем, задайте срок жизни и лимит открытий при необходимости, затем создайте ссылку." />
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 export function TagsTab({
   tagCatalog,
   leaderboardTags,
@@ -797,6 +998,76 @@ export function TagsTab({
   )
 }
 
+export function PublicShareScreen({
+  loading,
+  share,
+  error,
+  onClose,
+}: {
+  loading: boolean
+  share: ShareLinkItem | null
+  error: string
+  onClose: () => void
+}) {
+  const errorText = error
+    ? (error === 'burned'
+      ? 'Эта ссылка уже сожжена.'
+      : error === 'expired'
+        ? 'Срок действия этой ссылки истек.'
+        : error === 'exhausted'
+          ? 'Лимит открытий для этой ссылки уже исчерпан.'
+          : 'Открыть ссылку не удалось.')
+    : ''
+
+  return (
+    <main className="auth-shell public-share-shell">
+      <section className="public-share-card glass-panel">
+        <div className="panel-head">
+          <div><span>Public Share</span><h1>{share ? share.original_filename : 'Открытие ссылки'}</h1></div>
+          <button className="ghost-button" type="button" onClick={onClose}>Закрыть</button>
+        </div>
+        {loading ? (
+          <div className="empty-state">
+            <h2>Загружаем мем...</h2>
+            <p className="muted">Проверяем лимиты ссылки и подготавливаем доступ к файлу.</p>
+          </div>
+        ) : errorText ? (
+          <div className="empty-state">
+            <h2>Ссылка недоступна</h2>
+            <p className="muted">{errorText}</p>
+          </div>
+        ) : share ? (
+          <div className="public-share-layout">
+            <div className="public-share-media">
+              {share.kind === 'video'
+                ? <video controls autoPlay src={mediaAssetUrl(share.file_url)} />
+                : <img src={mediaAssetUrl(share.file_url)} alt={share.original_filename} />}
+            </div>
+            <div className="public-share-copy">
+              <div className="chip-row">
+                <span className={`badge badge-${share.safety_rating}`}>{ratingLabel(share.safety_rating)}</span>
+                <span className={`badge badge-share-${share.status}`}>{shareStatusLabel(share.status)}</span>
+                <span className="badge">{kindLabel(share.kind)}</span>
+              </div>
+              <div className="note-block">
+                <span>Файл</span>
+                <p>{share.original_filename}</p>
+              </div>
+              <div className="detail-grid share-detail-grid">
+                <div><span>Открытий</span><strong>{share.view_count}{share.max_views ? ` / ${share.max_views}` : ''}</strong></div>
+                <div><span>Осталось</span><strong>{share.views_remaining ?? 'без лимита'}</strong></div>
+                <div><span>Истекает</span><strong>{share.expires_at ? formatDate(share.expires_at) : 'без лимита'}</strong></div>
+                <div><span>Создал</span><strong>{share.created_by_username ?? `#${share.created_by_id}`}</strong></div>
+              </div>
+              <a className="secondary-button" href={mediaAssetUrl(share.file_url)} target="_blank" rel="noreferrer">Открыть в новой вкладке</a>
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </main>
+  )
+}
+
 export function ProcessingTab({
   processingStats,
   backlogEtaSeconds,
@@ -865,34 +1136,196 @@ export function ProcessingTab({
 
 export function BackupsTab({
   backups,
+  creatingBackupKey,
+  backupImportConfirmation,
+  importingBackupArchive,
+  importingBackupParts,
+  backupImportProgress,
   onCreateBackup,
+  onBackupImportConfirmationChange,
+  onImportBackupArchive,
+  onImportBackupParts,
+  buildBackupDownloadUrl,
 }: {
   backups: BackupItem[]
-  onCreateBackup: (scope: 'metadata' | 'full') => void
+  creatingBackupKey: string
+  backupImportConfirmation: string
+  importingBackupArchive: boolean
+  importingBackupParts: boolean
+  backupImportProgress: number
+  onCreateBackup: (scope: 'metadata' | 'full', delivery: 'telegram' | 'download') => Promise<void> | void
+  onBackupImportConfirmationChange: (value: string) => void
+  onImportBackupArchive: (file: File | null) => Promise<boolean> | boolean
+  onImportBackupParts: (files: File[]) => Promise<boolean> | boolean
+  buildBackupDownloadUrl: (backupId: string) => string
 }) {
+  const [archiveFile, setArchiveFile] = useState<File | null>(null)
+  const [partFiles, setPartFiles] = useState<File[]>([])
+  const [archiveInputKey, setArchiveInputKey] = useState(0)
+  const [partsInputKey, setPartsInputKey] = useState(0)
+
+  const handleArchivePick = (event: ChangeEvent<HTMLInputElement>) => {
+    setArchiveFile(event.target.files?.[0] ?? null)
+  }
+
+  const handlePartsPick = (event: ChangeEvent<HTMLInputElement>) => {
+    setPartFiles(Array.from(event.target.files ?? []))
+  }
+
+  const handleArchiveImport = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!archiveFile || importingBackupArchive) {
+      return
+    }
+    const restored = await onImportBackupArchive(archiveFile)
+    if (restored) {
+      setArchiveFile(null)
+      setArchiveInputKey((value) => value + 1)
+    }
+  }
+
+  const handlePartsImport = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!partFiles.length || importingBackupParts) {
+      return
+    }
+    const restored = await onImportBackupParts(partFiles)
+    if (restored) {
+      setPartFiles([])
+      setPartsInputKey((value) => value + 1)
+    }
+  }
+
+  const createLabel = (scope: 'metadata' | 'full', delivery: 'telegram' | 'download', idle: string) => (
+    creatingBackupKey === `${scope}:${delivery}` ? 'Запускаем...' : idle
+  )
+
   return (
     <div className="tab-stack split-stack">
       <section className="glass-panel action-panel">
-        <div className="panel-head"><div><span>Бэкапы</span><h2>Telegram backup pipeline</h2></div></div>
-        <p className="lede">Metadata-бэкап быстрый и легкий, full backup архивирует больше данных и режется на части для Telegram.</p>
-        <div className="button-row">
-          <button className="secondary-button" type="button" onClick={() => onCreateBackup('metadata')}>Metadata</button>
-          <button className="primary-button" type="button" onClick={() => onCreateBackup('full')}>Full backup</button>
+        <div className="panel-head"><div><span>Экспорт</span><h2>Telegram и browser download</h2></div></div>
+        <p className="lede">Metadata-бэкап быстрый и легкий. Full backup упаковывает базу и файлы, а downloadable-вариант готовит один архив без разбиения на куски.</p>
+        <div className="detail-grid">
+          <div><span>Telegram</span><strong>режет архив на части и шлет с паузами</strong></div>
+          <div><span>Browser download</span><strong>один файл, range/resume, автоочистка по TTL</strong></div>
         </div>
+        <div className="button-row">
+          <button className="secondary-button" type="button" onClick={() => void onCreateBackup('metadata', 'telegram')} disabled={Boolean(creatingBackupKey)}>
+            {createLabel('metadata', 'telegram', 'Metadata to Telegram')}
+          </button>
+          <button className="primary-button" type="button" onClick={() => void onCreateBackup('full', 'telegram')} disabled={Boolean(creatingBackupKey)}>
+            {createLabel('full', 'telegram', 'Full to Telegram')}
+          </button>
+        </div>
+        <div className="button-row">
+          <button className="secondary-button" type="button" onClick={() => void onCreateBackup('metadata', 'download')} disabled={Boolean(creatingBackupKey)}>
+            {createLabel('metadata', 'download', 'Metadata to Download')}
+          </button>
+          <button className="primary-button" type="button" onClick={() => void onCreateBackup('full', 'download')} disabled={Boolean(creatingBackupKey)}>
+            {createLabel('full', 'download', 'Full to Download')}
+          </button>
+        </div>
+      </section>
+      <section className="glass-panel action-panel">
+        <div className="panel-head"><div><span>Импорт</span><h2>Восстановление backup</h2></div></div>
+        <p className="lede">Поддерживаются и новые архивы с manifest/chunk metadata, и старые бэкапы без расширенных метаданных. Для восстановления нужно явное подтверждение.</p>
+        <label>
+          Confirmation
+          <input
+            value={backupImportConfirmation}
+            onChange={(event) => onBackupImportConfirmationChange(event.target.value)}
+            placeholder={BACKUP_RESTORE_CONFIRMATION}
+          />
+        </label>
+        <div className="note-block">
+          <span>Защита от случайного restore</span>
+          <p>Введите <strong>{BACKUP_RESTORE_CONFIRMATION}</strong>. Full restore заменяет базу и файлы; metadata restore восстанавливает только БД и ожидает, что media уже лежат на диске.</p>
+        </div>
+        <form className="note-block" onSubmit={(event) => void handleArchiveImport(event)}>
+          <span>Импорт одного архива</span>
+          <p>Подходит для downloadable backup. Загрузка идет chunk-ами, поэтому после обрыва можно продолжить тем же файлом.</p>
+          <div className="button-row">
+            <label className="secondary-button file-button">
+              Выбрать архив
+              <input key={archiveInputKey} type="file" accept=".tar,.gz,.tgz,.tar.gz,.zip,.bak" onChange={handleArchivePick} />
+            </label>
+            <button className="primary-button" type="submit" disabled={!archiveFile || importingBackupArchive}>
+              {importingBackupArchive ? 'Загружаем архив...' : 'Импортировать архив'}
+            </button>
+          </div>
+          <small>{archiveFile ? `${archiveFile.name} · ${formatBytes(archiveFile.size)}` : 'Архив пока не выбран.'}</small>
+          {importingBackupArchive || backupImportProgress > 0 ? (
+            <div className="progress-block">
+              <div className="progress-track"><div className="progress-bar" style={{ width: `${backupImportProgress}%` }} /></div>
+              <div className="row-meta"><span>Upload progress</span><strong>{backupImportProgress}%</strong></div>
+            </div>
+          ) : null}
+        </form>
+        <form className="note-block" onSubmit={(event) => void handlePartsImport(event)}>
+          <span>Импорт кусочков Telegram</span>
+          <p>Выберите сразу все части `backup.part001...`, `backup.part002...` и так далее. Сервер соберет архив по metadata, а staging автоматически очистится после восстановления.</p>
+          <div className="button-row">
+            <label className="secondary-button file-button">
+              Выбрать части
+              <input key={partsInputKey} type="file" multiple onChange={handlePartsPick} />
+            </label>
+            <button className="primary-button" type="submit" disabled={!partFiles.length || importingBackupParts}>
+              {importingBackupParts ? 'Собираем и восстанавливаем...' : 'Импортировать части'}
+            </button>
+          </div>
+          <small>{partFiles.length ? `${partFiles.length} файлов выбрано` : 'Части пока не выбраны.'}</small>
+        </form>
       </section>
       <section className="glass-panel list-panel">
         <div className="panel-head"><div><span>История</span><h2>Последние backup-задачи</h2></div></div>
         <div className="list-stack">
-          {backups.length ? backups.slice(0, 10).map((backup) => (
-            <article key={backup.id} className="list-row">
-              <div>
-                <strong>{backup.scope}</strong>
-                <small>{backup.parts.length} частей · {formatDate(backup.created_at)}</small>
-                {backup.error_message ? <small className="error-text">{backup.error_message}</small> : null}
-              </div>
-              <span className={`badge badge-status-${backup.status}`}>{backup.status}</span>
-            </article>
-          )) : <EmptyState title="Бэкапов пока нет." description="Создайте metadata или full backup, чтобы увидеть историю задач." />}
+          {backups.length ? backups.slice(0, 12).map((backup) => {
+            const delivery = resolveBackupDelivery(backup)
+            const totalPartBytes = backupTotalBytes(backup.part_files)
+            const missingParts = backup.part_files.filter((item) => !item.exists).length
+            const readyForDownload = Boolean(backup.download?.available)
+            return (
+              <article key={backup.id} className="list-row">
+                <div>
+                  <strong>{backupScopeLabel(backup.scope)} · {backupDeliveryLabel(delivery)}</strong>
+                  <small>{formatDate(backup.created_at)}{backup.completed_at ? ` · готово ${formatDate(backup.completed_at)}` : ''}</small>
+                  {backup.download ? (
+                    <small>
+                      {backup.download.file_name} · {formatBytes(backup.download.size_bytes)}
+                      {backup.download.expires_at ? ` · доступно до ${formatDate(backup.download.expires_at)}` : ''}
+                    </small>
+                  ) : null}
+                  {backup.part_files.length ? (
+                    <small>
+                      {backup.part_files.length} частей
+                      {totalPartBytes ? ` · ${formatBytes(totalPartBytes)}` : ''}
+                      {missingParts ? ` · ${missingParts} уже очищены локально` : ''}
+                    </small>
+                  ) : null}
+                  {backup.download?.sha256 ? <small>SHA256 {backup.download.sha256.slice(0, 16)}...</small> : null}
+                  {backup.error_message ? <small className="error-text">{backup.error_message}</small> : null}
+                </div>
+                <div>
+                  <div className="chip-row">
+                    <span className={`badge badge-status-${backup.status}`}>{backup.status}</span>
+                    <span className="badge">{backupDeliveryLabel(delivery)}</span>
+                    {backup.download ? (
+                      <span className={`badge ${readyForDownload ? 'badge-status-complete' : 'badge-status-failed'}`}>
+                        {readyForDownload ? 'download ready' : 'download expired'}
+                      </span>
+                    ) : null}
+                  </div>
+                  {readyForDownload ? (
+                    <div className="button-row">
+                      <a className="secondary-button" href={buildBackupDownloadUrl(backup.id)}>Скачать</a>
+                    </div>
+                  ) : delivery === 'download' && backup.status === 'complete' ? (
+                    <small className="muted">Файл уже очищен по TTL и больше недоступен.</small>
+                  ) : null}
+                </div>
+              </article>
+            )
+          }) : <EmptyState title="Бэкапов пока нет." description="Создайте metadata или full backup, чтобы увидеть историю задач, размеры файлов и доступные download-ссылки." />}
         </div>
       </section>
     </div>
@@ -982,14 +1415,33 @@ export function AdminTab({
   onSaveRuntimeConfig: (event: FormEvent) => void
   savingRuntimeConfig: boolean
   users: User[]
-  newUserForm: { username: string; password: string; telegram: string; role: 'admin' | 'member' }
-  onNewUserFormChange: (value: { username: string; password: string; telegram: string; role: 'admin' | 'member' }) => void
+  newUserForm: {
+    username: string
+    password: string
+    telegram: string
+    role: User['role']
+    guestAllowedOwnerIds: number[]
+    guestAllowedTags: string
+    guestBlockedTags: string
+  }
+  onNewUserFormChange: (value: {
+    username: string
+    password: string
+    telegram: string
+    role: User['role']
+    guestAllowedOwnerIds: number[]
+    guestAllowedTags: string
+    guestBlockedTags: string
+  }) => void
   onCreateUser: (event: FormEvent) => void
   dangerConfirmation: string
   onDangerConfirmationChange: (value: string) => void
   onResetLibrary: (event: FormEvent) => void
   resettingLibrary: boolean
 }) {
+  const eligibleGuestOwners = users.filter((user) => user.role !== 'guest')
+  const usernameById = new Map(users.map((user) => [user.id, user.username]))
+
   return (
     <div className="tab-stack">
       <section className="glass-panel metrics-panel">
@@ -1117,13 +1569,75 @@ export function AdminTab({
           <label>username<input value={newUserForm.username} onChange={(event) => onNewUserFormChange({ ...newUserForm, username: event.target.value })} required /></label>
           <label>password<input type="password" value={newUserForm.password} onChange={(event) => onNewUserFormChange({ ...newUserForm, password: event.target.value })} required /></label>
           <label>telegram<input value={newUserForm.telegram} onChange={(event) => onNewUserFormChange({ ...newUserForm, telegram: event.target.value })} placeholder="@username" /></label>
-          <label>role<select value={newUserForm.role} onChange={(event) => onNewUserFormChange({ ...newUserForm, role: event.target.value as 'admin' | 'member' })}><option value="member">member</option><option value="admin">admin</option></select></label>
+          <label>role<select value={newUserForm.role} onChange={(event) => onNewUserFormChange({ ...newUserForm, role: event.target.value as User['role'] })}><option value="member">member</option><option value="guest">guest</option><option value="admin">admin</option></select></label>
+          {newUserForm.role === 'guest' ? (
+            <>
+              <div className="note-block filter-span-2">
+                <span>Guest rules</span>
+                <p>Гость видит только медиа от выбранных авторов. Safe tags работают как whitelist по любому совпадению, а `-теги` скрывают медиа при любом совпадении.</p>
+              </div>
+              <div className="note-block filter-span-2">
+                <span>Разрешенные авторы</span>
+                <div className="chip-row spacious">
+                  {eligibleGuestOwners.map((user) => (
+                    <label key={`guest-owner-${user.id}`} className="tag-chip">
+                      <input
+                        type="checkbox"
+                        checked={newUserForm.guestAllowedOwnerIds.includes(user.id)}
+                        onChange={() => onNewUserFormChange({
+                          ...newUserForm,
+                          guestAllowedOwnerIds: newUserForm.guestAllowedOwnerIds.includes(user.id)
+                            ? newUserForm.guestAllowedOwnerIds.filter((value) => value !== user.id)
+                            : [...newUserForm.guestAllowedOwnerIds, user.id],
+                        })}
+                      />
+                      {user.username}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <label className="filter-span-2">
+                safe tags
+                <textarea
+                  value={newUserForm.guestAllowedTags}
+                  onChange={(event) => onNewUserFormChange({ ...newUserForm, guestAllowedTags: event.target.value })}
+                  placeholder="meme, wholesome, cats"
+                  rows={3}
+                />
+              </label>
+              <label className="filter-span-2">
+                -tags
+                <textarea
+                  value={newUserForm.guestBlockedTags}
+                  onChange={(event) => onNewUserFormChange({ ...newUserForm, guestBlockedTags: event.target.value })}
+                  placeholder="furry, gore"
+                  rows={3}
+                />
+              </label>
+            </>
+          ) : null}
           <button className="primary-button" type="submit">Добавить пользователя</button>
         </form>
         <div className="list-stack">
           {users.map((user) => (
             <article key={user.id} className="list-row">
-              <div><strong>{user.username}</strong><small>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram не подключен'}</small></div>
+              <div>
+                <strong>{user.username}</strong>
+                <small>{user.telegram_username ? `@${user.telegram_username}` : 'Telegram не подключен'}</small>
+                {user.role === 'guest' ? (
+                  <>
+                    <small>
+                      Авторы: {(user.guest_access?.allowed_owner_ids ?? []).map((ownerId) => usernameById.get(ownerId) ?? `#${ownerId}`).join(', ') || 'не выбраны'}
+                    </small>
+                    <small>
+                      safe: {(user.guest_access?.allowed_tags ?? []).map(prettifyTag).join(', ') || 'все теги выбранных авторов'}
+                    </small>
+                    <small>
+                      -tags: {(user.guest_access?.blocked_tags ?? []).map(prettifyTag).join(', ') || 'нет'}
+                    </small>
+                  </>
+                ) : null}
+              </div>
               <span className={`badge badge-role-${user.role}`}>{user.role}</span>
             </article>
           ))}
@@ -1161,19 +1675,41 @@ export function MediaViewerModal({
   token,
   onClose,
   onReindex,
+  onDeleteMedia,
   safetyForm,
   onSafetyFormChange,
   onSaveSafety,
   savingSafety,
+  deletingMedia,
+  canManageMedia,
+  shareForm,
+  onShareFormChange,
+  onCreateShare,
+  creatingShare,
+  mediaShares,
+  burningShareId,
+  onBurnShare,
+  onCopyShare,
 }: {
   selectedMedia: MediaItem | null
   token: string
   onClose: () => void
   onReindex: (mediaId: string) => void
+  onDeleteMedia: (item: MediaItem) => void
   safetyForm: { rating: SafetyRating; tags: string }
   onSafetyFormChange: (value: { rating: SafetyRating; tags: string }) => void
   onSaveSafety: (event: FormEvent) => void
   savingSafety: boolean
+  deletingMedia: boolean
+  canManageMedia: boolean
+  shareForm: { expiresInHours: string; maxViews: string }
+  onShareFormChange: (value: { expiresInHours: string; maxViews: string }) => void
+  onCreateShare: (event: FormEvent) => void
+  creatingShare: boolean
+  mediaShares: ShareLinkItem[]
+  burningShareId: string
+  onBurnShare: (shareId: string) => void
+  onCopyShare: (shareUrl: string) => void
 }) {
   if (!selectedMedia) {
     return null
@@ -1185,7 +1721,12 @@ export function MediaViewerModal({
         <div className="panel-head">
           <div><span>{kindLabel(selectedMedia.kind)}</span><h2>{selectedMedia.original_filename}</h2></div>
           <div className="button-row">
-            <button className="secondary-button" type="button" onClick={() => onReindex(selectedMedia.id)}>Reindex</button>
+            {canManageMedia ? <button className="secondary-button" type="button" onClick={() => onReindex(selectedMedia.id)}>Reindex</button> : null}
+            {canManageMedia ? (
+              <button className="danger-button" type="button" onClick={() => onDeleteMedia(selectedMedia)} disabled={deletingMedia}>
+                {deletingMedia ? 'Удаляем...' : 'Удалить с сервера'}
+              </button>
+            ) : null}
             <button className="ghost-button" type="button" onClick={onClose}>Close</button>
           </div>
         </div>
@@ -1200,30 +1741,86 @@ export function MediaViewerModal({
               <span className={`badge badge-${selectedMedia.safety_rating}`}>{ratingLabel(selectedMedia.safety_rating)}</span>
               <span className={`badge badge-status-${selectedMedia.processing_status}`}>{selectedMedia.processing_status}</span>
             </div>
-            <form className="safety-form note-block" onSubmit={onSaveSafety}>
-              <span>Safety moderation</span>
-              <label>
-                Rating
-                <select value={safetyForm.rating} onChange={(event) => onSafetyFormChange({ ...safetyForm, rating: event.target.value as SafetyRating })}>
-                  <option value="unknown">Unknown</option>
-                  <option value="sfw">SFW</option>
-                  <option value="questionable">Questionable</option>
-                  <option value="nsfw">NSFW</option>
-                </select>
-              </label>
-              <label>
-                Safety tags
-                <textarea
-                  value={safetyForm.tags}
-                  onChange={(event) => onSafetyFormChange({ ...safetyForm, tags: event.target.value })}
-                  placeholder="sfw, suggestive, nudity, censored..."
-                  rows={4}
-                />
-              </label>
-              <button className="secondary-button" type="submit" disabled={savingSafety}>
-                {savingSafety ? 'Сохраняем...' : 'Сохранить safety-теги'}
-              </button>
-            </form>
+            {canManageMedia ? (
+              <form className="safety-form note-block" onSubmit={onSaveSafety}>
+                <span>Safety moderation</span>
+                <label>
+                  Rating
+                  <select value={safetyForm.rating} onChange={(event) => onSafetyFormChange({ ...safetyForm, rating: event.target.value as SafetyRating })}>
+                    <option value="unknown">Unknown</option>
+                    <option value="sfw">SFW</option>
+                    <option value="questionable">Questionable</option>
+                    <option value="nsfw">NSFW</option>
+                  </select>
+                </label>
+                <label>
+                  Safety tags
+                  <textarea
+                    value={safetyForm.tags}
+                    onChange={(event) => onSafetyFormChange({ ...safetyForm, tags: event.target.value })}
+                    placeholder="sfw, suggestive, nudity, censored..."
+                    rows={4}
+                  />
+                </label>
+                <button className="secondary-button" type="submit" disabled={savingSafety}>
+                  {savingSafety ? 'Сохраняем...' : 'Сохранить safety-теги'}
+                </button>
+              </form>
+            ) : (
+              <div className="note-block">
+                <span>Гостевой режим</span>
+                <p>Карточка открыта только для просмотра. Reindex и ручная модерация доступны только участникам и администраторам.</p>
+              </div>
+            )}
+            {canManageMedia ? (
+              <form className="note-block" onSubmit={onCreateShare}>
+                <span>Public share</span>
+                <label>
+                  Время жизни (часы)
+                  <input
+                    value={shareForm.expiresInHours}
+                    onChange={(event) => onShareFormChange({ ...shareForm, expiresInHours: event.target.value })}
+                    placeholder="пусто = без лимита"
+                    inputMode="numeric"
+                  />
+                </label>
+                <label>
+                  Лимит открытий
+                  <input
+                    value={shareForm.maxViews}
+                    onChange={(event) => onShareFormChange({ ...shareForm, maxViews: event.target.value })}
+                    placeholder="пусто = без лимита"
+                    inputMode="numeric"
+                  />
+                </label>
+                <div className="button-row">
+                  <button className="secondary-button" type="submit" disabled={creatingShare}>
+                    {creatingShare ? 'Создаем...' : 'Создать ссылку'}
+                  </button>
+                </div>
+                {mediaShares.length ? (
+                  <div className="share-inline-list">
+                    {mediaShares.slice(0, 4).map((share) => (
+                      <article key={share.id} className="share-inline-item">
+                        <div className="share-inline-copy">
+                          <strong>{shareStatusLabel(share.status)}</strong>
+                          <small>{share.max_views ? `views ${share.view_count}/${share.max_views}` : `views ${share.view_count}`}</small>
+                          <small>{share.expires_at ? `до ${formatDate(share.expires_at)}` : 'без срока'}</small>
+                        </div>
+                        <div className="button-row">
+                          <button className="ghost-button" type="button" onClick={() => onCopyShare(share.share_url)}>Copy</button>
+                          <button className="danger-button" type="button" onClick={() => onBurnShare(share.id)} disabled={burningShareId === share.id || !share.is_active}>
+                            {burningShareId === share.id ? 'Burn...' : 'Сжечь'}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <small className="muted">Ссылок для этого мема еще нет.</small>
+                )}
+              </form>
+            ) : null}
             <div className="note-block">
               <span>Описание RU</span>
               <p>{trimText(selectedMedia.description_ru ?? selectedMedia.description, 'AI-описание пока отсутствует.', 1200)}</p>

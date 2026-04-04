@@ -30,6 +30,14 @@ def _owner_dir(owner_id: int) -> Path:
     return settings.media_dir / f"user_{owner_id}"
 
 
+def _cleanup_empty_directory(path: Path | None) -> None:
+    if path is None or not path.exists() or not path.is_dir():
+        return
+    if any(path.iterdir()):
+        return
+    path.rmdir()
+
+
 def _write_stream(input_stream, destination: Path) -> tuple[str, int]:
     sha256 = hashlib.sha256()
     total = 0
@@ -265,6 +273,25 @@ def absolute_thumbnail_path(item: MediaItem) -> Path | None:
     if not item.thumbnail_path:
         return None
     return settings.storage_root / item.thumbnail_path
+
+
+def delete_media_artifacts(item: MediaItem) -> list[str]:
+    removed: list[str] = []
+    media_path = absolute_media_path(item)
+    thumbnail_path = absolute_thumbnail_path(item)
+
+    if media_path.exists():
+        media_path.unlink(missing_ok=True)
+        removed.append(str(media_path.relative_to(settings.storage_root)))
+    if thumbnail_path is not None and thumbnail_path.exists():
+        thumbnail_path.unlink(missing_ok=True)
+        removed.append(str(thumbnail_path.relative_to(settings.storage_root)))
+
+    _cleanup_empty_directory(media_path.parent)
+    _cleanup_empty_directory(media_path.parent.parent)
+    if thumbnail_path is not None and thumbnail_path.parent != settings.thumbnails_dir:
+        _cleanup_empty_directory(thumbnail_path.parent)
+    return removed
 
 
 def ensure_media_artifacts(session, item: MediaItem, *, force: bool = False) -> bool:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask import Blueprint, g, jsonify
-from sqlalchemy import case, func, or_
+from sqlalchemy import case, false, func, or_
 
 from app.db.session import SessionLocal
 from app.models import AuditLog, MediaItem, MediaKind, ProcessingJob, ProcessingStatus, SafetyRating, User
@@ -9,6 +9,7 @@ from app.services.ai_limit_guard import get_ai_proxy_sleep_state
 from app.services.memory_guard import get_processing_memory_guard_state
 from app.services.ai_proxy import ANALYSIS_PROMPT
 from app.services.disk_usage import summarize_disk_usage
+from app.services.guest_access import apply_media_visibility_scope, guest_allowed_owner_ids
 from app.services.processor_monitor import get_processor_status
 from app.services.processing_stats import build_processing_stats, recent_logs_query_for_user
 from app.services.runtime_config import get_runtime_value
@@ -76,21 +77,29 @@ def _build_media_counts(media_query):
 def overview():
     session = SessionLocal()
     try:
-        media_query = session.query(MediaItem)
+        media_query = apply_media_visibility_scope(session.query(MediaItem), g.current_user)
         jobs_query = session.query(ProcessingJob)
         logs_query = session.query(AuditLog)
-        if g.current_user.role.value != "admin":
-            media_query = media_query.filter(MediaItem.owner_id == g.current_user.id)
+
+        if g.current_user.role.value == "member":
             jobs_query = jobs_query.filter(ProcessingJob.owner_id == g.current_user.id)
             logs_query = recent_logs_query_for_user(logs_query, g.current_user)
+        elif g.current_user.role.value == "guest":
+            jobs_query = jobs_query.filter(false())
+            logs_query = logs_query.filter(false())
 
         media_counts = _build_media_counts(media_query)
         recent_logs = logs_query.order_by(AuditLog.created_at.desc()).limit(20).all()
+        visible_users = (
+            len(guest_allowed_owner_ids(g.current_user))
+            if g.current_user.role.value == "guest"
+            else 1
+        )
         return jsonify(
             {
                 "counts": {
                     **media_counts,
-                    "users": session.query(User).count() if g.current_user.role.value == "admin" else 1,
+                    "users": session.query(User).count() if g.current_user.role.value == "admin" else visible_users,
                     "jobs": jobs_query.count(),
                 },
                 "processing_stats": build_processing_stats(session, media_query, jobs_query, logs_query),

@@ -9,6 +9,8 @@ from app.config import settings
 from app.db.session import init_db
 from app.services.archive import cleanup_archive_staging
 from app.services.audit import configure_logging
+from app.services.backup import backup_service
+from app.services.backup_restore import cleanup_stale_backup_imports
 from app.services.processing import get_processing_coordinator
 from app.services.resumable_uploads import cleanup_stale_upload_sessions
 from app.services.storage import ensure_storage_layout
@@ -29,6 +31,8 @@ def create_app() -> Flask:
     init_db()
     cleanup_archive_staging()
     cleanup_stale_upload_sessions()
+    cleanup_stale_backup_imports()
+    backup_service.cleanup_expired_backup_artifacts()
     register_blueprints(app)
     should_boot_workers = settings.env != "development" or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if settings.enable_processing and should_boot_workers:

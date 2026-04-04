@@ -18,6 +18,7 @@ def uuid_str() -> str:
 class UserRole(str, Enum):
     admin = "admin"
     member = "member"
+    guest = "guest"
 
 
 class MediaKind(str, Enum):
@@ -89,6 +90,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), default=UserRole.member)
     telegram_username: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    guest_allowed_owner_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    guest_allowed_tag_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    guest_blocked_tag_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -161,6 +165,7 @@ class MediaItem(Base):
 
     owner: Mapped[User] = relationship(back_populates="media_items")
     tags: Mapped[list["MediaTag"]] = relationship(back_populates="media", cascade="all, delete-orphan")
+    share_links: Mapped[list["ShareLink"]] = relationship(back_populates="media", cascade="all, delete-orphan")
 
 
 class Tag(Base):
@@ -209,6 +214,24 @@ class ProcessingJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ShareLink(Base):
+    __tablename__ = "share_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    media_id: Mapped[str] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"), index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    max_views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    media: Mapped[MediaItem] = relationship(back_populates="share_links")
+    created_by: Mapped[User] = relationship()
 
 
 class BackupSnapshot(Base):

@@ -71,6 +71,9 @@ class Settings:
     thumbnail_width: int = int(os.getenv("APP_THUMBNAIL_WIDTH", "640"))
     analysis_image_max_dimension: int = int(os.getenv("APP_ANALYSIS_IMAGE_MAX_DIMENSION", "0"))
     backup_chunk_mb: int = int(os.getenv("APP_BACKUP_CHUNK_MB", "49"))
+    backup_download_ttl_hours: int = int(os.getenv("APP_BACKUP_DOWNLOAD_TTL_HOURS", "24"))
+    backup_telegram_pause_seconds: int = int(os.getenv("APP_BACKUP_TELEGRAM_PAUSE_SECONDS", "2"))
+    backup_telegram_retry_attempts: int = int(os.getenv("APP_BACKUP_TELEGRAM_RETRY_ATTEMPTS", "3"))
     delete_local_backups_after_telegram: bool = _bool(
         "APP_DELETE_LOCAL_BACKUPS_AFTER_TELEGRAM",
         True,

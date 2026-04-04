@@ -8,10 +8,11 @@ from sqlalchemy.orm import load_only
 
 from app.config import settings
 from app.db.session import SessionLocal
-from app.models import JobStatus, MediaItem, MediaTag, ProcessingJob, SafetyRating, Tag, TagKind, TagOrigin
+from app.models import ArchiveImport, JobStatus, MediaItem, MediaTag, ProcessingJob, SafetyRating, Tag, TagKind, TagOrigin
 from app.services.analysis_enrichment import normalize_tag_name
 from app.services.archive import ingest_archive, ingest_archive_path
 from app.services.audit import audit
+from app.services.guest_access import apply_media_visibility_scope, media_item_visible_to_user
 from app.services.media_probe import detect_file_type
 from app.services.processing import enqueue_media, get_processing_coordinator
 from app.services.resumable_uploads import (
@@ -25,12 +26,13 @@ from app.services.resumable_uploads import (
 from app.services.storage import (
     absolute_media_path,
     absolute_thumbnail_path,
+    delete_media_artifacts,
     queue_media_for_processing,
     save_staged_media,
     save_uploaded_media,
 )
 from app.services.tag_catalog import get_tag_description_coordinator
-from app.utils.auth import login_required
+from app.utils.auth import login_required, member_required
 
 
 media_bp = Blueprint("media", __name__)
@@ -288,10 +290,6 @@ def _sync_safety_tags(session, item: MediaItem, rating: SafetyRating | None, saf
     return desired_names
 
 
-def _check_media_access(item: MediaItem, user) -> bool:
-    return user.role.value == "admin" or item.owner_id == user.id
-
-
 def _jobs_query_for_current_user(session):
     query = session.query(ProcessingJob)
     if g.current_user.role.value != "admin":
@@ -299,8 +297,31 @@ def _jobs_query_for_current_user(session):
     return query
 
 
+def _cleanup_orphaned_tags(session, owner_id: int, tag_ids: list[int]) -> None:
+    for tag_id in dict.fromkeys(tag_ids):
+        still_used = session.query(MediaTag.id).filter(MediaTag.tag_id == tag_id).first()
+        if still_used is not None:
+            continue
+        tag = session.get(Tag, tag_id)
+        if tag is not None and tag.owner_id == owner_id:
+            session.delete(tag)
+
+
+def _sync_archive_after_media_delete(session, archive_id: str | None) -> None:
+    if not archive_id:
+        return
+    archive = session.get(ArchiveImport, archive_id)
+    if archive is None:
+        return
+    remaining_media = session.query(MediaItem.id).filter(MediaItem.archive_id == archive_id).count()
+    if remaining_media <= 0:
+        session.delete(archive)
+        return
+    archive.file_count = remaining_media
+
+
 @media_bp.post("/uploads/init")
-@login_required
+@member_required
 def init_upload():
     payload = request.get_json(force=True)
     file_name = str(payload.get("file_name") or "").strip()
@@ -328,7 +349,7 @@ def init_upload():
 
 
 @media_bp.put("/uploads/<upload_id>/parts/<int:part_index>")
-@login_required
+@member_required
 def upload_chunk(upload_id: str, part_index: int):
     try:
         state = write_upload_chunk(upload_id, g.current_user.id, part_index, request.stream)
@@ -343,7 +364,7 @@ def upload_chunk(upload_id: str, part_index: int):
 
 
 @media_bp.post("/uploads/<upload_id>/complete")
-@login_required
+@member_required
 def complete_upload(upload_id: str):
     try:
         state, staged_path = finalize_upload_session(upload_id, g.current_user.id)
@@ -401,7 +422,7 @@ def complete_upload(upload_id: str):
 
 
 @media_bp.post("/media/upload")
-@login_required
+@member_required
 def upload_media():
     session = SessionLocal()
     try:
@@ -438,11 +459,12 @@ def upload_media():
 def list_media():
     session = SessionLocal()
     try:
-        query = session.query(MediaItem).options(load_only(*_MEDIA_LIST_COLUMNS))
+        query = apply_media_visibility_scope(
+            session.query(MediaItem).options(load_only(*_MEDIA_LIST_COLUMNS)),
+            g.current_user,
+        )
         needs_distinct = False
-        if g.current_user.role.value != "admin":
-            query = query.filter(MediaItem.owner_id == g.current_user.id)
-        elif request.args.get("owner_id"):
+        if g.current_user.role.value == "admin" and request.args.get("owner_id"):
             query = query.filter(MediaItem.owner_id == int(request.args["owner_id"]))
 
         search = request.args.get("q", "").strip()
@@ -515,7 +537,7 @@ def get_media(media_id: str):
     session = SessionLocal()
     try:
         item = session.get(MediaItem, media_id)
-        if item is None or not _check_media_access(item, g.current_user):
+        if item is None or not media_item_visible_to_user(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
         return jsonify({"item": _serialize_media_item(session, item, include_full_payload=True)})
     finally:
@@ -528,7 +550,7 @@ def stream_media(media_id: str):
     session = SessionLocal()
     try:
         item = session.get(MediaItem, media_id)
-        if item is None or not _check_media_access(item, g.current_user):
+        if item is None or not media_item_visible_to_user(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
         return _send_uncached_file(
             absolute_media_path(item),
@@ -561,7 +583,7 @@ def stream_thumbnail(media_id: str):
     session = SessionLocal()
     try:
         item = session.get(MediaItem, media_id)
-        if item is None or not _check_media_access(item, g.current_user):
+        if item is None or not media_item_visible_to_user(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
         thumbnail = absolute_thumbnail_path(item)
         if thumbnail is None or not thumbnail.exists():
@@ -587,13 +609,13 @@ def stream_thumbnail_public(media_id: str):
 
 
 @media_bp.patch("/media/<media_id>")
-@login_required
+@member_required
 def update_media(media_id: str):
     payload = request.get_json(force=True)
     session = SessionLocal()
     try:
         item = session.get(MediaItem, media_id)
-        if item is None or not _check_media_access(item, g.current_user):
+        if item is None or not media_item_visible_to_user(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
         if "description" in payload:
             item.description = payload["description"]
@@ -621,13 +643,79 @@ def update_media(media_id: str):
         session.close()
 
 
+@media_bp.delete("/media/<media_id>")
+@member_required
+def delete_media(media_id: str):
+    session = SessionLocal()
+    try:
+        item = session.get(MediaItem, media_id)
+        if item is None or not media_item_visible_to_user(item, g.current_user):
+            return jsonify({"error": "Not found"}), 404
+
+        active_job = (
+            session.query(ProcessingJob.id)
+            .filter(
+                ProcessingJob.media_id == item.id,
+                ProcessingJob.status == JobStatus.processing,
+            )
+            .first()
+        )
+        if active_job is not None:
+            return jsonify({"error": "Media is currently being processed and cannot be deleted right now"}), 409
+
+        tag_ids = [link.tag_id for link in item.tags]
+        archive_id = item.archive_id
+        owner_id = item.owner_id
+        original_filename = item.original_filename
+
+        deleted_jobs = (
+            session.query(ProcessingJob)
+            .filter(ProcessingJob.media_id == item.id)
+            .delete(synchronize_session=False)
+        )
+        session.delete(item)
+        session.flush()
+
+        _cleanup_orphaned_tags(session, owner_id, tag_ids)
+        _sync_archive_after_media_delete(session, archive_id)
+        removed_paths = delete_media_artifacts(item)
+        session.commit()
+
+        audit(
+            "media.deleted",
+            f"Deleted media {original_filename}",
+            actor_id=g.current_user.id,
+            owner_id=owner_id,
+            severity="warning",
+            context={
+                "media_id": media_id,
+                "deleted_jobs": deleted_jobs,
+                "removed_paths": removed_paths,
+            },
+        )
+        return jsonify(
+            {
+                "deleted": True,
+                "media_id": media_id,
+                "original_filename": original_filename,
+                "deleted_jobs": deleted_jobs,
+                "removed_paths": removed_paths,
+            }
+        )
+    except OSError as exc:
+        session.rollback()
+        return jsonify({"error": f"Failed to delete media files: {exc}"}), 500
+    finally:
+        session.close()
+
+
 @media_bp.post("/media/<media_id>/reindex")
-@login_required
+@member_required
 def reindex_media(media_id: str):
     session = SessionLocal()
     try:
         item = session.get(MediaItem, media_id)
-        if item is None or not _check_media_access(item, g.current_user):
+        if item is None or not media_item_visible_to_user(item, g.current_user):
             return jsonify({"error": "Not found"}), 404
     finally:
         session.close()
@@ -635,7 +723,7 @@ def reindex_media(media_id: str):
 
 
 @media_bp.get("/jobs")
-@login_required
+@member_required
 def list_jobs():
     session = SessionLocal()
     try:
@@ -662,7 +750,7 @@ def list_jobs():
 
 
 @media_bp.post("/jobs/retry-failed")
-@login_required
+@member_required
 def retry_failed_jobs():
     session = SessionLocal()
     queued_job_ids: list[str] = []
@@ -686,7 +774,7 @@ def retry_failed_jobs():
             failed_media_ids_seen.add(media_id)
 
             item = session.get(MediaItem, media_id)
-            if item is None or not _check_media_access(item, g.current_user):
+            if item is None or not media_item_visible_to_user(item, g.current_user):
                 skipped_missing_media_ids.append(media_id)
                 continue
 

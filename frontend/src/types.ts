@@ -1,13 +1,20 @@
-export type UserRole = 'admin' | 'member'
+export type UserRole = 'admin' | 'member' | 'guest'
 export type MediaKind = 'image' | 'gif' | 'video'
 export type SafetyRating = 'sfw' | 'questionable' | 'nsfw' | 'unknown'
 export type ProcessingStatus = 'pending' | 'processing' | 'complete' | 'failed'
+
+export interface GuestAccess {
+  allowed_owner_ids: number[]
+  allowed_tags: string[]
+  blocked_tags: string[]
+}
 
 export interface User {
   id: number
   username: string
   role: UserRole
   telegram_username?: string | null
+  guest_access?: GuestAccess | null
   created_at?: string | null
 }
 
@@ -65,10 +72,46 @@ export interface MediaItem {
   tags?: MediaTag[]
 }
 
+export type ShareStatus = 'active' | 'burned' | 'expired' | 'exhausted'
+
+export interface ShareLinkItem {
+  id: string
+  media_id: string
+  kind: MediaKind
+  original_filename: string
+  mime_type: string
+  safety_rating: SafetyRating
+  processing_status: ProcessingStatus
+  thumbnail_url?: string | null
+  file_url: string
+  share_url: string
+  created_by_id: number
+  created_by_username?: string | null
+  expires_at?: string | null
+  max_views?: number | null
+  view_count: number
+  views_remaining?: number | null
+  last_viewed_at?: string | null
+  revoked_at?: string | null
+  status: ShareStatus
+  is_active: boolean
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export interface MediaListResponse {
   items: MediaItem[]
   has_more: boolean
   next_cursor?: string | null
+}
+
+export interface ShareListResponse {
+  items: ShareLinkItem[]
+}
+
+export interface PublicShareResponse {
+  share: ShareLinkItem
+  asset_token_ttl_seconds: number
 }
 
 export interface JobItem {
@@ -201,12 +244,39 @@ export interface BackupItem {
   id: string
   scope: 'metadata' | 'full'
   status: 'queued' | 'running' | 'complete' | 'failed'
+  delivery_mode?: 'telegram' | 'download'
   parts: string[]
+  part_files: Array<{
+    index: number
+    file_name: string
+    path: string
+    size_bytes?: number
+    sha256?: string
+    exists: boolean
+  }>
+  download?: {
+    path: string
+    file_name: string
+    content_type: string
+    size_bytes: number
+    sha256?: string
+    expires_at?: string | null
+    available: boolean
+  } | null
   manifest: Record<string, unknown>
   error_message?: string | null
   owner_id?: number | null
   created_at?: string | null
   completed_at?: string | null
+}
+
+export interface BackupImportResponse {
+  restored: boolean
+  reauth_required: boolean
+  processing_paused: boolean
+  confirmation_phrase: string
+  message: string
+  manifest: Record<string, unknown>
 }
 
 export interface UploadResponse {

@@ -6,6 +6,7 @@ from sqlalchemy.exc import OperationalError
 from app.db.session import SessionLocal, ensure_database_schema, is_missing_table_error
 from app.models import User, UserRole
 from app.services.audit import audit
+from app.services.guest_access import serialize_guest_access
 from app.utils.auth import hash_password, issue_token, login_required, verify_password
 
 
@@ -18,6 +19,7 @@ def _serialize_user(user: User) -> dict:
         "username": user.username,
         "role": user.role.value,
         "telegram_username": user.telegram_username,
+        "guest_access": serialize_guest_access(user),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 

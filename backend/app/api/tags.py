@@ -4,14 +4,14 @@ from flask import Blueprint, g, jsonify, request
 
 from app.db.session import SessionLocal
 from app.services.tag_catalog import build_tag_catalog_payload, count_pending_tag_descriptions, get_tag_description_coordinator
-from app.utils.auth import login_required
+from app.utils.auth import member_required
 
 
 tags_bp = Blueprint("tags", __name__)
 
 
 @tags_bp.get("/tags")
-@login_required
+@member_required
 def list_tags():
     session = SessionLocal()
     try:
@@ -30,7 +30,7 @@ def list_tags():
 
 
 @tags_bp.post("/tags/backfill-missing")
-@login_required
+@member_required
 def backfill_missing_tags():
     pending = count_pending_tag_descriptions(None if g.current_user.role.value == "admin" else g.current_user.id)
     get_tag_description_coordinator().notify_backfill_needed()

@@ -11,6 +11,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from app.config import settings
 from app.db.session import SessionLocal, ensure_database_schema, is_missing_table_error
 from app.models import User, UserRole
+from app.services.guest_access import can_use_member_features
 
 
 def hash_password(password: str) -> str:
@@ -88,6 +89,18 @@ def admin_required(view: Callable[..., Any]) -> Callable[..., Any]:
         user: User = g.current_user
         if user.role != UserRole.admin:
             return jsonify({"error": "Admin access required"}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def member_required(view: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        user: User = g.current_user
+        if not can_use_member_features(user):
+            return jsonify({"error": "Guest accounts are view-only"}), 403
         return view(*args, **kwargs)
 
     return wrapped

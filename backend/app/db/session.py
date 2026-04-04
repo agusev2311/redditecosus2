@@ -41,7 +41,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 
 def init_db() -> None:
-    from app.models.entities import AppConfigEntry, ArchiveImport, AuditLog, BackupSnapshot, MediaItem, MediaTag, ProcessingJob, Tag, User  # noqa: F401
+    from app.models.entities import AppConfigEntry, ArchiveImport, AuditLog, BackupSnapshot, MediaItem, MediaTag, ProcessingJob, ShareLink, Tag, User  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _run_schema_migrations()
@@ -57,6 +57,9 @@ def _ensure_sqlite_column(table_name: str, column_name: str, ddl: str) -> None:
 
 
 def _run_schema_migrations() -> None:
+    _ensure_sqlite_column("users", "guest_allowed_owner_ids", "JSON")
+    _ensure_sqlite_column("users", "guest_allowed_tag_names", "JSON")
+    _ensure_sqlite_column("users", "guest_blocked_tag_names", "JSON")
     _ensure_sqlite_column("tags", "description_ru", "TEXT")
     _ensure_sqlite_column("tags", "description_en", "TEXT")
     _ensure_sqlite_column("tags", "details_payload", "JSON")
@@ -86,6 +89,15 @@ def _run_schema_migrations() -> None:
         )
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_processing_jobs_status_completed_at ON processing_jobs (status, completed_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_share_links_created_at ON share_links (created_at DESC)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_share_links_media_created_at ON share_links (media_id, created_at DESC)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_share_links_creator_created_at ON share_links (created_by_id, created_at DESC)"
         )
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_audit_logs_event_type_created_at ON audit_logs (event_type, created_at)"

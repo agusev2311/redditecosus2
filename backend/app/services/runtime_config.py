@@ -229,13 +229,22 @@ CONFIG_SPECS: dict[str, RuntimeConfigSpec] = {
 }
 
 
-def _coerce_value(spec: RuntimeConfigSpec, raw: Any) -> Any:
+def _coerce_value(spec: RuntimeConfigSpec, raw: Any, *, strict: bool = True) -> Any:
     if spec.kind == "integer":
-        value = int(raw)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValueError(f"{spec.key} must be integer")
+            value = int(spec.default)
         if spec.min_value is not None and value < spec.min_value:
-            raise ValueError(f"{spec.key} must be >= {spec.min_value}")
+            if strict:
+                raise ValueError(f"{spec.key} must be >= {spec.min_value}")
+            return spec.min_value
         if spec.max_value is not None and value > spec.max_value:
-            raise ValueError(f"{spec.key} must be <= {spec.max_value}")
+            if strict:
+                raise ValueError(f"{spec.key} must be <= {spec.max_value}")
+            return spec.max_value
         return value
 
     if spec.kind == "boolean":
@@ -246,17 +255,29 @@ def _coerce_value(spec: RuntimeConfigSpec, raw: Any) -> Any:
             return True
         if lowered in {"0", "false", "no", "off"}:
             return False
-        raise ValueError(f"{spec.key} must be boolean")
+        if strict:
+            raise ValueError(f"{spec.key} must be boolean")
+        return bool(spec.default)
 
     if spec.kind == "enum":
         value = str(raw).strip()
         if value not in spec.choices:
-            raise ValueError(f"{spec.key} must be one of: {', '.join(spec.choices)}")
+            if strict:
+                raise ValueError(f"{spec.key} must be one of: {', '.join(spec.choices)}")
+            fallback = str(spec.default).strip()
+            return fallback if fallback in spec.choices else spec.choices[0]
         return value
 
     if spec.kind == "timezone":
         value = str(raw).strip()
-        ZoneInfo(value)
+        try:
+            ZoneInfo(value)
+        except Exception:
+            if strict:
+                raise ValueError(f"{spec.key} must be a valid timezone")
+            fallback = str(spec.default).strip()
+            ZoneInfo(fallback)
+            return fallback
         return value
 
     return str(raw).strip()
@@ -266,15 +287,27 @@ def get_runtime_config_map() -> dict[str, Any]:
     session = new_session()
     try:
         rows = session.query(AppConfigEntry).all()
-        values = {row.key: row.value for row in rows}
+        row_map = {row.key: row for row in rows}
+        resolved: dict[str, Any] = {}
+        mutated = False
+        for key, spec in CONFIG_SPECS.items():
+            row = row_map.get(key)
+            raw = row.value if row is not None else spec.default
+            try:
+                value = _coerce_value(spec, raw)
+            except ValueError:
+                value = _coerce_value(spec, raw, strict=False)
+                if row is not None:
+                    serialized = str(value)
+                    if row.value != serialized:
+                        row.value = serialized
+                        mutated = True
+            resolved[key] = value
+        if mutated:
+            session.commit()
+        return resolved
     finally:
         session.close()
-
-    resolved: dict[str, Any] = {}
-    for key, spec in CONFIG_SPECS.items():
-        raw = values.get(key, spec.default)
-        resolved[key] = _coerce_value(spec, raw)
-    return resolved
 
 
 def get_runtime_value(key: str) -> Any:

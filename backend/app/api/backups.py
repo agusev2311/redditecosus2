@@ -90,6 +90,25 @@ def download_backup(backup_id: str):
     )
 
 
+@backups_bp.delete("/backups/<backup_id>")
+@member_required
+def delete_backup(backup_id: str):
+    try:
+        access = backup_service.backup_access_for_user(backup_id, g.current_user)
+    except FileNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    if not access.allowed:
+        return jsonify({"error": "Not found"}), 404
+
+    try:
+        result = backup_service.delete_snapshot(backup_id, actor_id=g.current_user.id)
+    except FileNotFoundError:
+        return jsonify({"error": "Not found"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify(result)
+
+
 @backups_bp.post("/backups/import")
 @member_required
 def import_backup():

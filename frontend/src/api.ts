@@ -391,6 +391,16 @@ export function createBackup(token: string, scope: 'metadata' | 'full', delivery
   )
 }
 
+export function deleteBackup(token: string, backupId: string) {
+  return request<{ deleted: boolean; backup_id: string; removed_artifacts: number }>(
+    `/api/backups/${backupId}`,
+    {
+      method: 'DELETE',
+    },
+    token,
+  )
+}
+
 export function importBackupFiles(token: string, files: File[], confirmation: string) {
   const form = new FormData()
   files.forEach((file) => form.append('files', file))

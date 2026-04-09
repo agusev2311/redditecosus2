@@ -394,6 +394,10 @@ button:disabled {
   justify-content: space-between;
 }
 
+.button-row {
+  flex-wrap: wrap;
+}
+
 .brand-lockup,
 .workspace-title {
   align-items: flex-start;
@@ -697,6 +701,14 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.backups-layout {
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+}
+
+.backups-history-panel {
+  grid-column: 1 / -1;
+}
+
 .hero-panel,
 .filter-panel,
 .gallery-panel,
@@ -959,6 +971,25 @@ button:disabled {
   background: rgba(255, 255, 255, 0.56);
 }
 
+.backup-row {
+  align-items: flex-start;
+}
+
+.backup-meta,
+.backup-actions {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.backup-actions {
+  justify-items: end;
+  flex: 0 0 min(320px, 100%);
+}
+
+.backup-action-row {
+  justify-content: flex-end;
+}
+
 .detail-list {
   margin: 0;
   padding-left: 1.1rem;
@@ -1076,6 +1107,7 @@ button:disabled {
 @media (max-width: 1200px) {
   .hero-grid,
   .split-stack,
+  .backups-layout,
   .tag-catalog-grid,
   .modal-grid,
   .public-share-layout,
@@ -1151,6 +1183,15 @@ button:disabled {
 
   .gallery-grid {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+
+  .backup-actions {
+    justify-items: stretch;
+    flex-basis: auto;
+  }
+
+  .backup-action-row {
+    justify-content: flex-start;
   }
 }
 

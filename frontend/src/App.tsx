@@ -7,6 +7,7 @@ import {
   createBackup,
   createShare,
   createUser,
+  deleteBackup,
   deleteMedia,
   importBackupFiles,
   getBootstrapStatus,
@@ -128,6 +129,7 @@ function App() {
   const [tagDescribedFilter, setTagDescribedFilter] = useState('')
   const [savingSafety, setSavingSafety] = useState(false)
   const [deletingMediaId, setDeletingMediaId] = useState('')
+  const [deletingBackupId, setDeletingBackupId] = useState('')
   const [creatingShare, setCreatingShare] = useState(false)
   const [burningShareId, setBurningShareId] = useState('')
   const [shareForm, setShareForm] = useState({ expiresInHours: '', maxViews: '' })
@@ -704,6 +706,31 @@ function App() {
     setCurrentUser(null)
     clearWorkspaceState()
     setNeedsBootstrap(false)
+  }
+
+  const handleDeleteBackup = async (backupId: string) => {
+    if (!token || deletingBackupId) return
+    if (!window.confirm('Удалить запись backup и все оставшиеся локальные файлы этой задачи с сервера?')) {
+      return
+    }
+
+    setError('')
+    setNotice('')
+    setDeletingBackupId(backupId)
+    try {
+      const result = await deleteBackup(token, backupId)
+      setBackups((current) => current.filter((item) => item.id !== backupId))
+      setNotice(
+        result.removed_artifacts > 0
+          ? `Backup удален, очищено артефактов: ${result.removed_artifacts}`
+          : 'Backup удален'
+      )
+      setRefreshNonce((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to delete backup')
+    } finally {
+      setDeletingBackupId('')
+    }
   }
 
   const handleImportBackupParts = async (files: File[]) => {
@@ -1336,11 +1363,13 @@ function App() {
             importingBackupArchive={importingBackupArchive}
             importingBackupParts={importingBackupParts}
             backupImportProgress={backupImportProgress}
+            deletingBackupId={deletingBackupId}
             onCreateBackup={handleCreateBackup}
             onBackupImportConfirmationChange={setBackupImportConfirmation}
             onImportBackupArchive={handleImportBackupArchive}
             onImportBackupParts={handleImportBackupParts}
             buildBackupDownloadUrl={buildBackupDownloadLink}
+            onDeleteBackup={handleDeleteBackup}
           />
         ) : null}
         {activeTab === 'activity' ? (

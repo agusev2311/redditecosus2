@@ -1141,11 +1141,13 @@ export function BackupsTab({
   importingBackupArchive,
   importingBackupParts,
   backupImportProgress,
+  deletingBackupId,
   onCreateBackup,
   onBackupImportConfirmationChange,
   onImportBackupArchive,
   onImportBackupParts,
   buildBackupDownloadUrl,
+  onDeleteBackup,
 }: {
   backups: BackupItem[]
   creatingBackupKey: string
@@ -1153,11 +1155,13 @@ export function BackupsTab({
   importingBackupArchive: boolean
   importingBackupParts: boolean
   backupImportProgress: number
+  deletingBackupId: string
   onCreateBackup: (scope: 'metadata' | 'full', delivery: 'telegram' | 'download') => Promise<void> | void
   onBackupImportConfirmationChange: (value: string) => void
   onImportBackupArchive: (file: File | null) => Promise<boolean> | boolean
   onImportBackupParts: (files: File[]) => Promise<boolean> | boolean
   buildBackupDownloadUrl: (backupId: string) => string
+  onDeleteBackup: (backupId: string) => Promise<void> | void
 }) {
   const [archiveFile, setArchiveFile] = useState<File | null>(null)
   const [partFiles, setPartFiles] = useState<File[]>([])
@@ -1201,7 +1205,7 @@ export function BackupsTab({
   )
 
   return (
-    <div className="tab-stack split-stack">
+    <div className="tab-stack split-stack backups-layout">
       <section className="glass-panel action-panel">
         <div className="panel-head"><div><span>Экспорт</span><h2>Telegram и browser download</h2></div></div>
         <p className="lede">Metadata-бэкап быстрый и легкий. Full backup упаковывает базу и файлы, а downloadable-вариант готовит один архив без разбиения на куски.</p>
@@ -1276,7 +1280,7 @@ export function BackupsTab({
           <small>{partFiles.length ? `${partFiles.length} файлов выбрано` : 'Части пока не выбраны.'}</small>
         </form>
       </section>
-      <section className="glass-panel list-panel">
+      <section className="glass-panel list-panel backups-history-panel">
         <div className="panel-head"><div><span>История</span><h2>Последние backup-задачи</h2></div></div>
         <div className="list-stack">
           {backups.length ? backups.slice(0, 12).map((backup) => {
@@ -1284,9 +1288,10 @@ export function BackupsTab({
             const totalPartBytes = backupTotalBytes(backup.part_files)
             const missingParts = backup.part_files.filter((item) => !item.exists).length
             const readyForDownload = Boolean(backup.download?.available)
+            const canDelete = backup.status !== 'queued' && backup.status !== 'running'
             return (
-              <article key={backup.id} className="list-row">
-                <div>
+              <article key={backup.id} className="list-row backup-row">
+                <div className="backup-meta">
                   <strong>{backupScopeLabel(backup.scope)} · {backupDeliveryLabel(delivery)}</strong>
                   <small>{formatDate(backup.created_at)}{backup.completed_at ? ` · готово ${formatDate(backup.completed_at)}` : ''}</small>
                   {backup.download ? (
@@ -1305,7 +1310,7 @@ export function BackupsTab({
                   {backup.download?.sha256 ? <small>SHA256 {backup.download.sha256.slice(0, 16)}...</small> : null}
                   {backup.error_message ? <small className="error-text">{backup.error_message}</small> : null}
                 </div>
-                <div>
+                <div className="backup-actions">
                   <div className="chip-row">
                     <span className={`badge badge-status-${backup.status}`}>{backup.status}</span>
                     <span className="badge">{backupDeliveryLabel(delivery)}</span>
@@ -1315,13 +1320,24 @@ export function BackupsTab({
                       </span>
                     ) : null}
                   </div>
-                  {readyForDownload ? (
-                    <div className="button-row">
-                      <a className="secondary-button" href={buildBackupDownloadUrl(backup.id)}>Скачать</a>
+                  {readyForDownload || canDelete ? (
+                    <div className="button-row backup-action-row">
+                      {readyForDownload ? <a className="secondary-button" href={buildBackupDownloadUrl(backup.id)}>Скачать</a> : null}
+                      {canDelete ? (
+                        <button
+                          className="danger-button"
+                          type="button"
+                          onClick={() => void onDeleteBackup(backup.id)}
+                          disabled={deletingBackupId === backup.id}
+                        >
+                          {deletingBackupId === backup.id ? 'Удаляем...' : backup.status === 'failed' ? 'Удалить failed' : 'Удалить'}
+                        </button>
+                      ) : null}
                     </div>
                   ) : delivery === 'download' && backup.status === 'complete' ? (
                     <small className="muted">Файл уже очищен по TTL и больше недоступен.</small>
                   ) : null}
+                  {!canDelete ? <small className="muted">Активный backup можно удалить после завершения.</small> : null}
                 </div>
               </article>
             )

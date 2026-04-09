@@ -85,6 +85,32 @@ def _cleanup_empty_directory(path: Path) -> None:
         path.rmdir()
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _manifest_part_paths(manifest: dict[str, Any]) -> list[Path]:
+    chunking = manifest.get("chunking")
+    if not isinstance(chunking, dict):
+        return []
+    part_files = chunking.get("part_files")
+    if not isinstance(part_files, list):
+        return []
+
+    resolved: list[Path] = []
+    for item in part_files:
+        if not isinstance(item, dict):
+            continue
+        path = _absolute_storage_path(str(item.get("path") or ""))
+        if path is not None:
+            resolved.append(path)
+    return resolved
+
+
 class ChunkedWriter:
     def __init__(self, output_dir: Path, chunk_size: int) -> None:
         self.output_dir = output_dir
@@ -268,6 +294,10 @@ class BackupService:
 
         now = utcnow()
         for snapshot in snapshots:
+            if snapshot.status == BackupStatus.failed:
+                removed += self._remove_snapshot_artifacts(snapshot)
+                continue
+
             manifest = snapshot.manifest if isinstance(snapshot.manifest, dict) else {}
             download = manifest.get("download") if isinstance(manifest, dict) else None
             expires_at = _parse_datetime(download.get("expires_at")) if isinstance(download, dict) else None
@@ -280,6 +310,32 @@ class BackupService:
             _cleanup_empty_directory(output_dir)
 
         return removed
+
+    def delete_snapshot(self, snapshot_id: str, *, actor_id: int | None = None) -> dict[str, Any]:
+        session = SessionLocal()
+        try:
+            snapshot = session.get(BackupSnapshot, snapshot_id)
+            if snapshot is None:
+                raise FileNotFoundError(snapshot_id)
+            if snapshot.status in {BackupStatus.queued, BackupStatus.running}:
+                raise ValueError("Backup is still running and cannot be deleted yet")
+
+            removed_artifacts = self._remove_snapshot_artifacts(snapshot)
+            owner_id = snapshot.owner_id
+            status = snapshot.status.value
+            session.delete(snapshot)
+            session.commit()
+        finally:
+            session.close()
+
+        audit(
+            "backup.deleted",
+            f"Backup {snapshot_id} deleted",
+            owner_id=owner_id,
+            actor_id=actor_id,
+            context={"snapshot_id": snapshot_id, "status": status, "removed_artifacts": removed_artifacts},
+        )
+        return {"deleted": True, "backup_id": snapshot_id, "removed_artifacts": removed_artifacts}
 
     def backup_access_for_user(self, snapshot_id: str, user) -> BackupAccessResult:
         session = SessionLocal()
@@ -330,9 +386,18 @@ class BackupService:
             manifest = self._build_manifest(session, snapshot.owner_id, snapshot.scope, delivery_mode, snapshot.id)
             if delivery_mode == "telegram":
                 writer = ChunkedWriter(output_dir, chunk_mb * 1024 * 1024)
-                self._write_archive(writer, session, snapshot.owner_id, snapshot.scope, manifest)
-                writer.close()
-                part_paths = [_absolute_storage_path(part["path"]) for part in writer.parts]
+                try:
+                    self._write_archive(writer, session, snapshot.owner_id, snapshot.scope, manifest)
+                finally:
+                    writer.close()
+                part_paths: list[Path] = []
+                for part in writer.parts:
+                    part_path = _absolute_storage_path(str(part.get("path") or ""))
+                    if part_path is None or not part_path.exists():
+                        raise RuntimeError(
+                            f"Backup part {part.get('file_name') or 'unknown'} is missing before Telegram upload"
+                        )
+                    part_paths.append(part_path)
                 manifest["chunking"] = {
                     "mode": "split",
                     "chunk_size_bytes": chunk_mb * 1024 * 1024,
@@ -344,10 +409,7 @@ class BackupService:
                 session.commit()
 
                 if settings.telegram_bot_token and settings.telegram_backup_chat_id:
-                    self._send_parts_to_telegram(
-                        [path for path in part_paths if path is not None],
-                        snapshot.id,
-                    )
+                    self._send_parts_to_telegram(part_paths, snapshot.id)
                     manifest["delivery_status"] = {"telegram_sent": True, "sent_at": utcnow().isoformat()}
                     if settings.delete_local_backups_after_telegram:
                         for part_path in part_paths:
@@ -359,8 +421,10 @@ class BackupService:
             else:
                 download_path = output_dir / DOWNLOAD_ARTIFACT_NAME
                 writer = HashingFileWriter(download_path)
-                self._write_archive(writer, session, snapshot.owner_id, snapshot.scope, manifest)
-                writer.close()
+                try:
+                    self._write_archive(writer, session, snapshot.owner_id, snapshot.scope, manifest)
+                finally:
+                    writer.close()
 
                 expires_at = utcnow() + timedelta(hours=int(get_runtime_value("backup_download_ttl_hours")))
                 manifest["chunking"] = {
@@ -392,19 +456,85 @@ class BackupService:
             )
         except Exception as exc:
             snapshot = session.get(BackupSnapshot, snapshot_id)
+            removed_artifacts = 0
             if snapshot is not None:
                 snapshot.status = BackupStatus.failed
-                snapshot.error_message = str(exc)
                 snapshot.completed_at = utcnow()
+                cleanup_error = None
+                try:
+                    removed_artifacts = self._remove_snapshot_artifacts(snapshot)
+                    self._mark_snapshot_cleanup(snapshot, removed_artifacts=removed_artifacts, reason="failed")
+                except Exception as cleanup_exc:  # pragma: no cover - defensive path
+                    cleanup_error = str(cleanup_exc)
+                snapshot.error_message = (
+                    f"{exc}. Cleanup also failed: {cleanup_error}"
+                    if cleanup_error
+                    else str(exc)
+                )
                 session.commit()
             audit(
                 "backup.failed",
                 f"Backup {snapshot_id} failed: {exc}",
                 severity="error",
-                context={"snapshot_id": snapshot_id, "delivery_mode": delivery_mode},
+                context={
+                    "snapshot_id": snapshot_id,
+                    "delivery_mode": delivery_mode,
+                    "removed_artifacts": removed_artifacts,
+                },
             )
         finally:
             session.close()
+
+    def _remove_snapshot_artifacts(self, snapshot: BackupSnapshot) -> int:
+        manifest = snapshot.manifest if isinstance(snapshot.manifest, dict) else {}
+        output_dir = _backup_output_dir(snapshot.id)
+        extra_paths: dict[str, Path] = {}
+
+        for relative_path in snapshot.parts or []:
+            path = _absolute_storage_path(relative_path)
+            if path is not None:
+                extra_paths[str(path)] = path
+
+        for path in _manifest_part_paths(manifest):
+            extra_paths[str(path)] = path
+
+        download = manifest.get("download")
+        if isinstance(download, dict):
+            path = _absolute_storage_path(str(download.get("path") or ""))
+            if path is not None:
+                extra_paths[str(path)] = path
+
+        removed = 0
+        for path in extra_paths.values():
+            if _path_is_within(path, output_dir):
+                continue
+            if not _path_is_within(path, settings.storage_root):
+                continue
+            if path.exists():
+                removed += 1
+            _remove_path_if_exists(path)
+
+        if _path_is_within(output_dir, settings.backups_dir):
+            if output_dir.exists():
+                removed += 1
+            _remove_path_if_exists(output_dir)
+        _cleanup_empty_directory(settings.backups_dir)
+        return removed
+
+    def _mark_snapshot_cleanup(self, snapshot: BackupSnapshot, *, removed_artifacts: int, reason: str) -> None:
+        manifest = _safe_copy_manifest(snapshot.manifest)
+        cleanup = manifest.get("cleanup")
+        cleanup_payload = cleanup if isinstance(cleanup, dict) else {}
+        cleanup_payload.update(
+            {
+                "reason": reason,
+                "local_artifacts_pruned": True,
+                "removed_entries": removed_artifacts,
+                "at": utcnow().isoformat(),
+            }
+        )
+        manifest["cleanup"] = cleanup_payload
+        snapshot.manifest = manifest
 
     def _build_manifest(self, session, owner_id: int | None, scope: BackupScope, delivery_mode: str, snapshot_id: str) -> dict[str, Any]:
         query = session.query(MediaItem)
@@ -523,6 +653,8 @@ class BackupService:
         retry_attempts = int(get_runtime_value("backup_telegram_retry_attempts"))
         with httpx.Client(timeout=300) as client:
             for index, part in enumerate(parts, start=1):
+                if not part.exists():
+                    raise RuntimeError(f"Backup part {part.name} disappeared before Telegram upload")
                 last_error_message = ""
                 for attempt in range(1, retry_attempts + 1):
                     with part.open("rb") as handle:

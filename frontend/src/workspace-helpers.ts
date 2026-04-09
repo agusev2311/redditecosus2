@@ -1,5 +1,6 @@
 import type {
   DiskUsagePayload,
+  LogItem,
   MediaItem,
   ProcessingStats,
   SafetyRating,
@@ -324,6 +325,16 @@ export function topTagsFromMedia(items: MediaItem[]) {
     ;(item.tags ?? []).forEach((tag) => tagCountMap.set(tag.name, (tagCountMap.get(tag.name) ?? 0) + 1))
   })
   return Array.from(tagCountMap.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)
+}
+
+export function topEventTypesFromLogs(items: LogItem[]) {
+  const eventCountMap = new Map<string, number>()
+  items.forEach((item) => {
+    const key = item.event_type?.trim()
+    if (!key) return
+    eventCountMap.set(key, (eventCountMap.get(key) ?? 0) + 1)
+  })
+  return Array.from(eventCountMap.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12)
 }
 
 export function orderedProjectBreakdown(storage: DiskUsagePayload | null) {

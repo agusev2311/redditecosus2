@@ -235,6 +235,85 @@ class AIProxyService:
             text = response.text
         return f"{response.request.method} {response.request.url} -> HTTP {response.status_code}: {' '.join(text.split())[:1200]}"
 
+    def _extract_text_from_content(self, content: Any) -> str | None:
+        if isinstance(content, str):
+            text = content.strip()
+            return text or None
+        if isinstance(content, dict):
+            for key in ("text", "content"):
+                value = content.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+        if not isinstance(content, list):
+            return None
+
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+            if not isinstance(item, dict):
+                continue
+            for key in ("text", "content"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+                    break
+        if not parts:
+            return None
+        return "\n".join(parts)
+
+    def _extract_structured_json_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError("AI proxy response does not contain choices")
+
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise RuntimeError("AI proxy response choice has unexpected shape")
+
+        message = choice.get("message")
+        if isinstance(message, dict):
+            parsed = message.get("parsed")
+            if isinstance(parsed, dict):
+                return parsed
+
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if isinstance(item.get("parsed"), dict):
+                        return item["parsed"]
+                    if isinstance(item.get("json"), dict):
+                        return item["json"]
+            elif isinstance(content, dict):
+                if isinstance(content.get("parsed"), dict):
+                    return content["parsed"]
+                if isinstance(content.get("json"), dict):
+                    return content["json"]
+
+            content_text = self._extract_text_from_content(content)
+            if content_text is not None:
+                return json.loads(content_text)
+
+            refusal = message.get("refusal")
+            if refusal:
+                raise RuntimeError(f"AI proxy refused structured response: {refusal}")
+
+        choice_text = self._extract_text_from_content(choice.get("text"))
+        if choice_text is not None:
+            return json.loads(choice_text)
+
+        finish_reason = choice.get("finish_reason")
+        raise RuntimeError(
+            f"AI proxy returned an empty structured response"
+            f"{f' (finish_reason={finish_reason})' if finish_reason else ''}"
+        )
+
     def _request_structured_json(
         self,
         *,
@@ -292,8 +371,7 @@ class AIProxyService:
             raise
 
         body = response.json()
-        content_text = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content_text)
+        parsed = self._extract_structured_json_payload(body)
         return parsed, body, response, elapsed, slot_wait_seconds
 
     def _normalize_tag_list(self, values: list[str]) -> list[str]:

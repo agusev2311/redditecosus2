@@ -68,6 +68,7 @@ import {
   orderedProjectBreakdown,
   parseTagInput,
   selectedTagDetails as getSelectedTagDetails,
+  topEventTypesFromLogs,
   toDateInputString,
   topTagsFromMedia,
   workspaceTabs,
@@ -1195,6 +1196,7 @@ function App() {
     ? buildStorageSegments(orderedProjectItems.map(([key, bytes]) => ({ key, bytes })), projectUsageTotal)
     : []
   const topTags = topTagsFromMedia(media)
+  const topEventTypes = topEventTypesFromLogs(overview.recent_logs)
   const leaderboardTags = tagCatalog.leaderboard.length ? tagCatalog.leaderboard : []
   const queueFocus = jobs.filter((job) => job.status === 'failed' || job.status === 'processing').slice(0, 8)
   const tabs = workspaceTabs(currentUser?.role)
@@ -1373,7 +1375,7 @@ function App() {
           />
         ) : null}
         {activeTab === 'activity' ? (
-          <ActivityTab logs={overview.recent_logs} topTags={topTags} onJumpToTag={handleActivityJumpToTag} />
+          <ActivityTab logs={overview.recent_logs} topEvents={topEventTypes} onJumpToTag={handleActivityJumpToTag} />
         ) : null}
         {activeTab === 'admin' && currentUser.role === 'admin' ? (
           <AdminTab

@@ -705,6 +705,10 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(320px, 1fr));
 }
 
+.activity-layout {
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.6fr);
+}
+
 .backups-history-panel {
   grid-column: 1 / -1;
 }
@@ -990,6 +994,24 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.activity-log-row {
+  align-items: flex-start;
+}
+
+.activity-log-copy {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.activity-summary-panel {
+  align-content: start;
+}
+
+.activity-summary-item {
+  gap: 0.35rem;
+}
+
 .detail-list {
   margin: 0;
   padding-left: 1.1rem;
@@ -1108,6 +1130,7 @@ button:disabled {
   .hero-grid,
   .split-stack,
   .backups-layout,
+  .activity-layout,
   .tag-catalog-grid,
   .modal-grid,
   .public-share-layout,

@@ -1350,38 +1350,55 @@ export function BackupsTab({
 
 export function ActivityTab({
   logs,
-  topTags,
+  topEvents,
   onJumpToTag,
 }: {
   logs: OverviewPayload['recent_logs']
-  topTags: Array<[string, number]>
+  topEvents: Array<[string, number]>
   onJumpToTag: (tag: string) => void
 }) {
   return (
-    <div className="tab-stack split-stack">
+    <div className="tab-stack split-stack activity-layout">
       <section className="glass-panel list-panel">
-        <div className="panel-head"><div><span>Логи</span><h2>Последние события системы</h2></div></div>
+        <div className="panel-head"><div><span>Журнал</span><h2>Последние системные события</h2></div></div>
         <div className="list-stack">
           {logs.length ? logs.slice(0, 12).map((log) => (
-            <article key={log.id} className="list-row">
-              <div>
+            <article key={log.id} className="list-row activity-log-row">
+              <div className="activity-log-copy">
                 <strong>{log.event_type}</strong>
                 <small>{trimText(log.message, '', 140)}</small>
-                <small>{formatDate(log.created_at)}</small>
+                <div className="chip-row">
+                  <small>{formatDate(log.created_at)}</small>
+                </div>
               </div>
               <span className={`badge badge-severity-${log.severity}`}>{log.severity}</span>
             </article>
           )) : <EmptyState title="Журнал пока пуст." description="Как только появятся операции и фоновые события, они будут видны здесь." />}
         </div>
       </section>
-      <section className="glass-panel tags-panel">
-        <div className="panel-head"><div><span>Теги</span><h2>Частые теги в текущей выборке</h2></div></div>
-        <div className="chip-row spacious">
-          {topTags.map(([tag, count]) => (
-            <button key={tag} className="tag-chip" type="button" onClick={() => onJumpToTag(tag)}>
-              {prettifyTag(tag)} · {count}
-            </button>
-          ))}
+      <section className="glass-panel tags-panel activity-summary-panel">
+        <div className="panel-head"><div><span>Сводка</span><h2>Какие события повторяются</h2></div></div>
+        {topEvents.length ? (
+          <div className="share-inline-list">
+            {topEvents.map(([eventType, count]) => (
+              <div key={eventType} className="share-inline-item activity-summary-item">
+                <strong>{eventType}</strong>
+                <small>{count} записей в текущем окне журнала</small>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="note-block">
+            <span>Пока тихо</span>
+            <p>Когда в журнале накопятся записи, здесь появятся повторяющиеся типы событий. Для перехода к медиа по тегу по-прежнему используйте библиотеку.</p>
+          </div>
+        )}
+        <div className="note-block">
+          <span>Быстрый переход</span>
+          <p>Нужен поиск по тегу из текущей медиатеки? Откройте библиотеку и примените фильтр одним кликом.</p>
+          <button className="secondary-button" type="button" onClick={() => onJumpToTag('')}>
+            Открыть библиотеку
+          </button>
         </div>
       </section>
     </div>
